@@ -5,11 +5,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MonthSelect } from "./components/month-select.js";
 import { CULTURE_PROFILES, DEFAULT_CROPS, EMPTY_BED, EMPTY_CROP, MONTHS, MONTHS_LONG } from "./lib/garden-data.js";
 import { loadGarden, saveGarden } from "./lib/garden-storage.js";
-import { clamp, createId, findCultureProfile, monthRange, normalizeBeds } from "./lib/garden-utils.js";
+import { clamp, createId, findCultureProfile, monthRange, normalizeBeds, snapPositionToGrid } from "./lib/garden-utils.js";
 
 
 export default function GardenApp() {
-  const [state, setState] = useState({ beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true });
+  const [state, setState] = useState({ beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true, showGrid: false, gridSizeCm: 20 });
   const [ready, setReady] = useState(false);
   const [bedDraft, setBedDraft] = useState(EMPTY_BED);
   const [cropDraft, setCropDraft] = useState(EMPTY_CROP);
@@ -30,7 +30,7 @@ export default function GardenApp() {
   useEffect(() => {
     if (!ready) return;
     saveGarden(window.localStorage, state);
-  }, [state.beds, state.crops, state.showSpacing, ready]);
+  }, [state.beds, state.crops, state.showSpacing, state.showGrid, state.gridSizeCm, ready]);
 
   const flash = (message) => {
     setNotice(message);
@@ -75,12 +75,18 @@ export default function GardenApp() {
     const crop = state.crops.find((item) => item.id === cropId);
     if (!bed || !crop) return;
     const nextIndex = (bed.plantings || []).length;
+    const requestedPosition = {
+      x: position?.x ?? 16 + (nextIndex % 5) * 17,
+      y: position?.y ?? 20 + (Math.floor(nextIndex / 5) % 4) * 20,
+    };
+    const plantPosition = state.showGrid
+      ? snapPositionToGrid(requestedPosition, bed, state.gridSizeCm)
+      : { x: clamp(requestedPosition.x), y: clamp(requestedPosition.y) };
     const planting = {
       id: createId("pflanze"),
       cropId,
       date: new Date().toISOString().slice(0, 10),
-      x: clamp(position?.x ?? 16 + (nextIndex % 5) * 17),
-      y: clamp(position?.y ?? 20 + (Math.floor(nextIndex / 5) % 4) * 20),
+      ...plantPosition,
     };
     setState((prev) => ({
       ...prev,
@@ -104,8 +110,29 @@ export default function GardenApp() {
       ...prev,
       beds: prev.beds.map((bed) => bed.id === bedId ? {
         ...bed,
-        plantings: (bed.plantings || []).map((item) => item.id === plantingId ? { ...item, x: clamp(x), y: clamp(y) } : item),
+        plantings: (bed.plantings || []).map((item) => {
+          if (item.id !== plantingId) return item;
+          const position = prev.showGrid
+            ? snapPositionToGrid({ x, y }, bed, prev.gridSizeCm)
+            : { x: clamp(x), y: clamp(y) };
+          return { ...item, ...position };
+        }),
       } : bed),
+    }));
+  };
+
+  const updateGridSettings = (showGrid, gridSizeCm) => {
+    setState((prev) => ({
+      ...prev,
+      showGrid,
+      gridSizeCm,
+      beds: showGrid ? prev.beds.map((bed) => ({
+        ...bed,
+        plantings: (bed.plantings || []).map((planting) => ({
+          ...planting,
+          ...snapPositionToGrid(planting, bed, gridSizeCm),
+        })),
+      })) : prev.beds,
     }));
   };
 
@@ -147,12 +174,19 @@ export default function GardenApp() {
   };
 
   const nudgePlant = (event, bedId, planting) => {
-    const amount = event.shiftKey ? 5 : 1;
+    const bed = state.beds.find((item) => item.id === bedId);
+    const stepCount = event.shiftKey ? 5 : 1;
+    const horizontalAmount = state.showGrid && bed
+      ? (state.gridSizeCm / (Number(bed.length) * 100)) * 100 * stepCount
+      : stepCount;
+    const verticalAmount = state.showGrid && bed
+      ? (state.gridSizeCm / (Number(bed.width) * 100)) * 100 * stepCount
+      : stepCount;
     const offsets = {
-      ArrowLeft: [-amount, 0],
-      ArrowRight: [amount, 0],
-      ArrowUp: [0, -amount],
-      ArrowDown: [0, amount],
+      ArrowLeft: [-horizontalAmount, 0],
+      ArrowRight: [horizontalAmount, 0],
+      ArrowUp: [0, -verticalAmount],
+      ArrowDown: [0, verticalAmount],
     };
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
@@ -245,7 +279,7 @@ export default function GardenApp() {
   };
 
   const exportGarden = () => {
-    const blob = new Blob([JSON.stringify({ beds: state.beds, crops: state.crops, showSpacing: state.showSpacing }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ beds: state.beds, crops: state.crops, showSpacing: state.showSpacing, showGrid: state.showGrid, gridSizeCm: state.gridSizeCm }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -261,7 +295,14 @@ export default function GardenApp() {
     try {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.beds) || !Array.isArray(data.crops)) throw new Error("invalid");
-      setState((prev) => ({ ...prev, beds: normalizeBeds(data.beds), crops: data.crops, showSpacing: data.showSpacing !== false }));
+      setState((prev) => ({
+        ...prev,
+        beds: normalizeBeds(data.beds),
+        crops: data.crops,
+        showSpacing: data.showSpacing !== false,
+        showGrid: data.showGrid === true,
+        gridSizeCm: Math.min(100, Math.max(5, Number(data.gridSizeCm) || 20)),
+      }));
       setSelectedPlant(null);
       flash("Sicherung importiert.");
     } catch {
@@ -320,11 +361,31 @@ export default function GardenApp() {
             <div><span className="section-kicker">Flächen</span><h2 id="beete-title">Beetplanung</h2></div>
             <div className="bed-heading-tools">
               <p>Pflanzen einzeln ins Beet ziehen und an ihrer späteren Position ablegen.</p>
-              <label className="distance-toggle">
-                <input type="checkbox" checked={state.showSpacing} onChange={(event) => setState((prev) => ({ ...prev, showSpacing: event.target.checked }))} />
-                <span aria-hidden="true"><i /></span>
-                <b>Pflanzabstände</b>
-              </label>
+              <div className="planner-controls">
+                <label className="distance-toggle">
+                  <input type="checkbox" checked={state.showSpacing} onChange={(event) => setState((prev) => ({ ...prev, showSpacing: event.target.checked }))} />
+                  <span aria-hidden="true"><i /></span>
+                  <b>Pflanzabstände</b>
+                </label>
+                <label className="distance-toggle">
+                  <input type="checkbox" checked={state.showGrid} onChange={(event) => updateGridSettings(event.target.checked, state.gridSizeCm)} />
+                  <span aria-hidden="true"><i /></span>
+                  <b>Raster &amp; Einrasten</b>
+                </label>
+                <label className="grid-size-control">
+                  <span>Rasterweite</span>
+                  <input
+                    type="range"
+                    min="5"
+                    max="100"
+                    step="5"
+                    value={state.gridSizeCm}
+                    disabled={!state.showGrid}
+                    onChange={(event) => updateGridSettings(true, Number(event.target.value))}
+                  />
+                  <output>{state.gridSizeCm} cm</output>
+                </label>
+              </div>
             </div>
           </div>
 
@@ -401,6 +462,17 @@ export default function GardenApp() {
                           >
                             {(bed.plantings || []).length === 0 && <span className="bed-empty">Pflanze hier ablegen</span>}
 
+                            {state.showGrid && (
+                              <div
+                                className="grid-layer"
+                                style={{
+                                  "--grid-x": `${(state.gridSizeCm / bedLengthCm) * 100}%`,
+                                  "--grid-y": `${(state.gridSizeCm / bedWidthCm) * 100}%`,
+                                }}
+                                aria-hidden="true"
+                              />
+                            )}
+
                             {state.showSpacing && (
                               <svg className="distance-layer" viewBox={`0 0 ${bedLengthCm} ${bedWidthCm}`} preserveAspectRatio="none" aria-hidden="true">
                                 {(bed.plantings || []).map((planting) => {
@@ -436,7 +508,7 @@ export default function GardenApp() {
                                   onPointerCancel={finishPlantMove}
                                   onKeyDown={(event) => nudgePlant(event, bed.id, planting)}
                                   onClick={() => setSelectedPlant({ bedId: bed.id, plantingId: planting.id })}
-                                  aria-label={`${crop.name} bei ${Math.round(planting.x)} Prozent Länge und ${Math.round(planting.y)} Prozent Breite`}
+                                  aria-label={`${crop.name} bei ${Math.round(planting.x)} Prozent Länge und ${Math.round(planting.y)} Prozent Breite${state.showGrid ? `, im ${state.gridSizeCm}-Zentimeter-Raster` : ""}`}
                                   title={`${crop.name} · ${crop.spacing} cm Pflanzabstand`}
                                 >
                                   <span className="plant-marker">{crop.icon}</span>
@@ -459,7 +531,12 @@ export default function GardenApp() {
                           )}
                           <strong>{(bed.plantings || []).length} {(bed.plantings || []).length === 1 ? "Pflanze" : "Pflanzen"}</strong>
                         </div>
-                        {state.showSpacing && <p className="distance-note">Die gestrichelten Kreise berühren sich beim empfohlenen Pflanzabstand.</p>}
+                        {(state.showSpacing || state.showGrid) && (
+                          <p className="distance-note">
+                            {state.showSpacing && "Die gestrichelten Kreise zeigen den empfohlenen Pflanzabstand. "}
+                            {state.showGrid && `Pflanzen rasten im ${state.gridSizeCm}-cm-Raster ein.`}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </article>
