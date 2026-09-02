@@ -1,2 +1,0 @@
-# Garden-Journal
-Garden Journal
