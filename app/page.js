@@ -2,134 +2,11 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"];
-const MONTHS_LONG = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+import { MonthSelect } from "./components/month-select.js";
+import { CULTURE_PROFILES, DEFAULT_CROPS, EMPTY_BED, EMPTY_CROP, MONTHS, MONTHS_LONG } from "./lib/garden-data.js";
+import { loadGarden, saveGarden } from "./lib/garden-storage.js";
+import { clamp, createId, findCultureProfile, monthRange, normalizeBeds } from "./lib/garden-utils.js";
 
-const DEFAULT_CROPS = [
-  { id: "tomate", name: "Tomate", icon: "T", color: "#e45d43", sowStart: 2, sowEnd: 4, harvestStart: 7, harvestEnd: 10, spacing: 50, note: "Warm vorziehen, nach den Eisheiligen auspflanzen." },
-  { id: "karotte", name: "Karotte", icon: "K", color: "#ef8c32", sowStart: 3, sowEnd: 7, harvestStart: 6, harvestEnd: 11, spacing: 5, note: "Direktsaat in lockeren, steinarmen Boden." },
-  { id: "salat", name: "Pflücksalat", icon: "S", color: "#78a95a", sowStart: 3, sowEnd: 8, harvestStart: 5, harvestEnd: 10, spacing: 25, note: "Satzweise säen für eine lange Ernte." },
-  { id: "bohne", name: "Buschbohne", icon: "B", color: "#4e8c5b", sowStart: 5, sowEnd: 7, harvestStart: 7, harvestEnd: 10, spacing: 10, note: "Erst in ausreichend erwärmten Boden säen." },
-  { id: "zucchini", name: "Zucchini", icon: "Z", color: "#86a638", sowStart: 4, sowEnd: 5, harvestStart: 7, harvestEnd: 10, spacing: 100, note: "Benötigt viel Platz und regelmäßige Ernte." },
-  { id: "knoblauch", name: "Knoblauch", icon: "Kn", color: "#8f7b9b", sowStart: 9, sowEnd: 11, harvestStart: 6, harvestEnd: 8, spacing: 12, note: "Herbststeckung ist für kräftige Knollen geeignet." },
-  { id: "gruenkohl", name: "Grünkohl", icon: "G", color: "#356f4a", sowStart: 5, sowEnd: 7, harvestStart: 10, harvestEnd: 2, spacing: 50, note: "Winterhart; Ernte nach Bedarf bis ins Frühjahr." },
-  { id: "radieschen", name: "Radieschen", icon: "R", color: "#c94d73", sowStart: 3, sowEnd: 9, harvestStart: 4, harvestEnd: 10, spacing: 5, note: "Kurze Kulturzeit, gut als Vor- und Nachkultur." },
-];
-
-const cultureProfile = (name, aliases, outdoor, greenhouse, spacing, color) => ({
-  name,
-  aliases,
-  outdoor: { sowStart: outdoor[0], sowEnd: outdoor[1], harvestStart: outdoor[2], harvestEnd: outdoor[3] },
-  greenhouse: { sowStart: greenhouse[0], sowEnd: greenhouse[1], harvestStart: greenhouse[2], harvestEnd: greenhouse[3] },
-  spacing,
-  color,
-});
-
-const CULTURE_PROFILES = [
-  cultureProfile("Artischocke", ["Artischocken"], [2, 4, 8, 10], [1, 3, 6, 11], 90, "#65866a"),
-  cultureProfile("Aubergine", ["Eierfrucht"], [1, 3, 7, 10], [1, 2, 5, 11], 60, "#765777"),
-  cultureProfile("Blumenkohl", [], [2, 6, 6, 10], [1, 7, 5, 11], 50, "#9a9f78"),
-  cultureProfile("Brokkoli", ["Broccoli"], [2, 7, 6, 10], [1, 7, 5, 11], 50, "#3f7650"),
-  cultureProfile("Buschbohne", ["Buschbohnen", "Bohne", "Bohnen"], [5, 7, 7, 10], [4, 7, 6, 11], 10, "#4e8c5b"),
-  cultureProfile("Chili", ["Chilischote", "Peperoni"], [1, 3, 7, 10], [1, 2, 5, 11], 45, "#c8493f"),
-  cultureProfile("Erbse", ["Erbsen", "Markerbse", "Zuckererbse"], [3, 6, 5, 8], [2, 5, 4, 8], 5, "#6d9b52"),
-  cultureProfile("Feldsalat", ["Rapunzel"], [7, 9, 9, 3], [8, 11, 10, 4], 10, "#4f7955"),
-  cultureProfile("Fenchel", ["Knollenfenchel"], [4, 7, 7, 10], [3, 8, 6, 11], 30, "#79a37c"),
-  cultureProfile("Grünkohl", ["Braunkohl"], [5, 7, 10, 2], [4, 7, 9, 3], 50, "#356f4a"),
-  cultureProfile("Gurke", ["Gurken", "Salatgurke", "Einlegegurke"], [4, 6, 7, 9], [3, 5, 5, 10], 40, "#5d9252"),
-  cultureProfile("Karotte", ["Karotten", "Möhre", "Möhren"], [3, 7, 6, 11], [2, 8, 5, 12], 5, "#ef8c32"),
-  cultureProfile("Kartoffel", ["Kartoffeln"], [3, 5, 6, 10], [2, 4, 5, 9], 35, "#a58a57"),
-  cultureProfile("Knoblauch", [], [9, 11, 6, 8], [9, 11, 5, 7], 12, "#8f7b9b"),
-  cultureProfile("Kohlrabi", [], [2, 7, 5, 10], [1, 9, 3, 12], 25, "#75916f"),
-  cultureProfile("Kopfsalat", ["Salat", "Eissalat"], [2, 7, 5, 10], [1, 9, 3, 11], 30, "#78a95a"),
-  cultureProfile("Kürbis", ["Kuerbis", "Speisekürbis", "Hokkaido"], [4, 5, 8, 10], [3, 4, 7, 10], 120, "#d77f37"),
-  cultureProfile("Lauch", ["Porree"], [1, 5, 7, 3], [1, 4, 6, 3], 15, "#4f8063"),
-  cultureProfile("Mais", ["Zuckermais"], [4, 5, 8, 10], [3, 4, 7, 10], 25, "#c9a947"),
-  cultureProfile("Mangold", ["Stielmangold"], [4, 7, 6, 11], [2, 8, 5, 12], 30, "#b24757"),
-  cultureProfile("Pak Choi", ["Pakchoi", "Senfkohl"], [7, 9, 9, 11], [2, 10, 4, 12], 25, "#5d8759"),
-  cultureProfile("Paprika", ["Gemüsepaprika"], [1, 3, 7, 10], [1, 2, 5, 11], 45, "#d75a3b"),
-  cultureProfile("Pastinake", ["Pastinaken"], [3, 5, 9, 2], [2, 4, 8, 2], 10, "#b7a675"),
-  cultureProfile("Pflücksalat", ["Pfluecksalat", "Schnittsalat"], [3, 8, 5, 10], [1, 10, 3, 12], 25, "#78a95a"),
-  cultureProfile("Radieschen", ["Radies"], [3, 9, 4, 10], [1, 11, 2, 12], 5, "#c94d73"),
-  cultureProfile("Rosenkohl", [], [2, 4, 9, 2], [1, 3, 8, 2], 50, "#50764e"),
-  cultureProfile("Rote Bete", ["Rote Beete", "Randen"], [4, 7, 7, 11], [3, 7, 6, 12], 10, "#9a3e55"),
-  cultureProfile("Rucola", ["Rauke"], [3, 9, 4, 11], [1, 11, 2, 12], 10, "#648b4d"),
-  cultureProfile("Sellerie", ["Knollensellerie", "Staudensellerie"], [2, 3, 8, 10], [1, 3, 7, 11], 40, "#7f9665"),
-  cultureProfile("Spinat", [], [2, 4, 4, 6], [1, 4, 3, 6], 10, "#3f7951"),
-  cultureProfile("Stangenbohne", ["Stangenbohnen"], [5, 7, 7, 10], [4, 7, 6, 11], 15, "#477c54"),
-  cultureProfile("Süßkartoffel", ["Suesskartoffel", "Batate"], [2, 4, 9, 10], [1, 3, 8, 11], 35, "#b86e48"),
-  cultureProfile("Tomate", ["Tomaten"], [2, 4, 7, 10], [1, 3, 5, 11], 50, "#e45d43"),
-  cultureProfile("Topinambur", [], [3, 4, 10, 2], [2, 4, 9, 2], 40, "#b58a46"),
-  cultureProfile("Weißkohl", ["Weisskohl", "Kappes"], [2, 5, 7, 11], [1, 4, 5, 11], 50, "#779176"),
-  cultureProfile("Zucchini", [], [4, 5, 6, 10], [3, 4, 5, 11], 100, "#86a638"),
-  cultureProfile("Zwiebel", ["Zwiebeln", "Speisezwiebel"], [2, 4, 8, 9], [1, 3, 6, 9], 10, "#b2965b"),
-];
-
-function normalizeCultureName(value) {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function findCultureProfile(value) {
-  const normalized = normalizeCultureName(value.trim());
-  if (!normalized) return null;
-  return CULTURE_PROFILES.find((profile) => [profile.name, ...profile.aliases].some((name) => normalizeCultureName(name) === normalized)) || null;
-}
-
-const EMPTY_BED = { name: "", width: 1.2, length: 3 };
-const EMPTY_CROP = { name: "", icon: "", color: "#56845f", growingProfile: "outdoor", sowStart: 3, sowEnd: 5, harvestStart: 6, harvestEnd: 9, spacing: 30, note: "" };
-
-function uid(prefix) {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function clamp(value, min = 0, max = 100) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function normalizeBeds(beds) {
-  return beds.map((bed) => {
-    const plantings = [];
-    (bed.plantings || []).forEach((planting) => {
-      const alreadyPositioned = Number.isFinite(Number(planting.x)) && Number.isFinite(Number(planting.y));
-      const count = alreadyPositioned ? 1 : Math.max(1, Number(planting.count) || 1);
-
-      for (let index = 0; index < count; index += 1) {
-        const positionIndex = plantings.length;
-        plantings.push({
-          id: index === 0 && planting.id ? planting.id : uid("pflanze"),
-          cropId: planting.cropId,
-          date: planting.date || new Date().toISOString().slice(0, 10),
-          x: alreadyPositioned ? clamp(Number(planting.x)) : 14 + (positionIndex % 6) * 14,
-          y: alreadyPositioned ? clamp(Number(planting.y)) : 18 + (Math.floor(positionIndex / 6) % 4) * 21,
-        });
-      }
-    });
-    return { ...bed, plantings };
-  });
-}
-
-function monthRange(start, end) {
-  if (!start || !end) return [];
-  if (start <= end) return Array.from({ length: end - start + 1 }, (_, i) => start + i);
-  return [...Array.from({ length: 13 - start }, (_, i) => start + i), ...Array.from({ length: end }, (_, i) => i + 1)];
-}
-
-function loadGarden() {
-  if (typeof window === "undefined") return { beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true };
-  try {
-    const raw = window.localStorage.getItem("gemuesegarten-v1");
-    if (!raw) return { beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true };
-    const parsed = JSON.parse(raw);
-    return {
-      beds: Array.isArray(parsed.beds) ? normalizeBeds(parsed.beds) : [],
-      crops: Array.isArray(parsed.crops) && parsed.crops.length ? parsed.crops : DEFAULT_CROPS,
-      activeTab: "beete",
-      showSpacing: parsed.showSpacing !== false,
-    };
-  } catch {
-    return { beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true };
-  }
-}
 
 export default function GardenApp() {
   const [state, setState] = useState({ beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true });
@@ -152,7 +29,7 @@ export default function GardenApp() {
 
   useEffect(() => {
     if (!ready) return;
-    window.localStorage.setItem("gemuesegarten-v1", JSON.stringify({ beds: state.beds, crops: state.crops, showSpacing: state.showSpacing }));
+    saveGarden(window.localStorage, state);
   }, [state.beds, state.crops, state.showSpacing, ready]);
 
   const flash = (message) => {
@@ -181,7 +58,7 @@ export default function GardenApp() {
     if (!bedDraft.name.trim()) return flash("Ein Beetname fehlt.");
     setState((prev) => ({
       ...prev,
-      beds: [...prev.beds, { id: uid("beet"), name: bedDraft.name.trim(), width: Number(bedDraft.width), length: Number(bedDraft.length), plantings: [] }],
+      beds: [...prev.beds, { id: createId("beet"), name: bedDraft.name.trim(), width: Number(bedDraft.width), length: Number(bedDraft.length), plantings: [] }],
     }));
     setBedDraft(EMPTY_BED);
     flash("Beet angelegt.");
@@ -199,7 +76,7 @@ export default function GardenApp() {
     if (!bed || !crop) return;
     const nextIndex = (bed.plantings || []).length;
     const planting = {
-      id: uid("pflanze"),
+      id: createId("pflanze"),
       cropId,
       date: new Date().toISOString().slice(0, 10),
       x: clamp(position?.x ?? 16 + (nextIndex % 5) * 17),
@@ -331,7 +208,7 @@ export default function GardenApp() {
     if (!cropDraft.name.trim()) return flash("Ein Kulturname fehlt.");
     const crop = {
       ...cropDraft,
-      id: editingCrop || uid("kultur"),
+      id: editingCrop || createId("kultur"),
       name: cropDraft.name.trim(),
       icon: cropDraft.icon.trim() || cropDraft.name.trim().slice(0, 2),
       sowStart: Number(cropDraft.sowStart),
@@ -682,8 +559,4 @@ export default function GardenApp() {
       {notice && <div className="toast" role="status">✓ {notice}</div>}
     </main>
   );
-}
-
-function MonthSelect({ value, onChange }) {
-  return <select value={value} onChange={(e) => onChange(Number(e.target.value))}>{MONTHS_LONG.map((month, index) => <option key={month} value={index + 1}>{month}</option>)}</select>;
 }
