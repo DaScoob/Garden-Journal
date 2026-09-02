@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { clamp, findCultureProfile, monthRange, normalizeBeds } from "../app/lib/garden-utils.js";
+import { clamp, findCultureProfile, monthRange, normalizeBeds, snapPositionToGrid } from "../app/lib/garden-utils.js";
 import { loadGarden, saveGarden, STORAGE_KEY } from "../app/lib/garden-storage.js";
 
 test("monthRange returns a range within one year", () => {
@@ -23,6 +23,13 @@ test("clamp limits values to the bed canvas", () => {
   assert.equal(clamp(102), 100);
 });
 
+test("snapPositionToGrid uses physically square centimeter cells", () => {
+  assert.deepEqual(
+    snapPositionToGrid({ x: 47, y: 48 }, { length: 3, width: 1.2 }, 20),
+    { x: 46.666666666666664, y: 50 },
+  );
+});
+
 test("normalizeBeds expands legacy planting counts", () => {
   let nextId = 0;
   const [bed] = normalizeBeds([
@@ -42,10 +49,12 @@ test("garden storage falls back safely and persists only durable state", () => {
   };
 
   assert.deepEqual(loadGarden(storage).beds, []);
-  saveGarden(storage, { beds: [{ id: "beet-1" }], crops: [], showSpacing: false, activeTab: "kalender" });
+  saveGarden(storage, { beds: [{ id: "beet-1" }], crops: [], showSpacing: false, showGrid: true, gridSizeCm: 25, activeTab: "kalender" });
   assert.deepEqual(JSON.parse(values.get(STORAGE_KEY)), {
     beds: [{ id: "beet-1" }],
     crops: [],
     showSpacing: false,
+    showGrid: true,
+    gridSizeCm: 25,
   });
 });

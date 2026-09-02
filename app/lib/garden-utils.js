@@ -8,6 +8,27 @@ export function clamp(value, min = 0, max = 100) {
   return Math.min(max, Math.max(min, value));
 }
 
+function snapCoordinate(percent, axisLengthCm, gridSizeCm) {
+  const positionCm = (clamp(percent) / 100) * axisLengthCm;
+  const snappedCm = Math.round(positionCm / gridSizeCm) * gridSizeCm;
+  return (clamp(snappedCm, 0, axisLengthCm) / axisLengthCm) * 100;
+}
+
+export function snapPositionToGrid(position, bed, gridSizeCm) {
+  const lengthCm = Number(bed.length) * 100;
+  const widthCm = Number(bed.width) * 100;
+  const safeGridSize = Math.max(1, Number(gridSizeCm) || 1);
+
+  if (lengthCm <= 0 || widthCm <= 0) {
+    return { x: clamp(position.x), y: clamp(position.y) };
+  }
+
+  return {
+    x: snapCoordinate(position.x, lengthCm, safeGridSize),
+    y: snapCoordinate(position.y, widthCm, safeGridSize),
+  };
+}
+
 export function monthRange(start, end) {
   if (!start || !end) return [];
   if (start <= end) return Array.from({ length: end - start + 1 }, (_, index) => start + index);
