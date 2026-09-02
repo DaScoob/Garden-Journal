@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build && node scripts/sites-adapter.mjs",
-    "start": "vinext start"
+    "start": "vinext start",
+    "test": "node --test",
+    "check": "npm test && npm run build"
   },
   "dependencies": {
     "@vinext/cloudflare": "1.0.0-beta.6",
