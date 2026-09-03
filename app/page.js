@@ -3,13 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { MonthSelect } from "./components/month-select.js";
+import { ConfirmDialog } from "./components/confirm-dialog.js";
+import { StarRating } from "./components/star-rating.js";
 import { CULTURE_PROFILES, DEFAULT_CROPS, EMPTY_BED, EMPTY_CROP, MONTHS, MONTHS_LONG } from "./lib/garden-data.js";
 import { loadGarden, saveGarden } from "./lib/garden-storage.js";
-import { clamp, createId, findCultureProfile, monthRange, normalizeBeds, snapPositionToGrid } from "./lib/garden-utils.js";
+import { clamp, createId, filterCalendarCrops, findCultureProfile, monthRange, normalizeBeds, normalizeCrops, normalizeRating, snapPositionToGrid } from "./lib/garden-utils.js";
 
 
 export default function GardenApp() {
-  const [state, setState] = useState({ beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true, showGrid: false, gridSizeCm: 20 });
+  const [state, setState] = useState({ beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true, spacingTransparency: 25, showGrid: false, gridSizeCm: 20 });
   const [ready, setReady] = useState(false);
   const [bedDraft, setBedDraft] = useState(EMPTY_BED);
   const [cropDraft, setCropDraft] = useState(EMPTY_CROP);
@@ -18,7 +20,10 @@ export default function GardenApp() {
   const [selectedPlant, setSelectedPlant] = useState(null);
   const [cropSearch, setCropSearch] = useState("");
   const [calendarFilter, setCalendarFilter] = useState("all");
+  const [calendarBedId, setCalendarBedId] = useState("all");
+  const [paletteRatingFilter, setPaletteRatingFilter] = useState("all");
   const [notice, setNotice] = useState("");
+  const [deleteRequest, setDeleteRequest] = useState(null);
   const importRef = useRef(null);
   const movingPlantRef = useRef(null);
 
@@ -30,7 +35,7 @@ export default function GardenApp() {
   useEffect(() => {
     if (!ready) return;
     saveGarden(window.localStorage, state);
-  }, [state.beds, state.crops, state.showSpacing, state.showGrid, state.gridSizeCm, ready]);
+  }, [state.beds, state.crops, state.showSpacing, state.spacingTransparency, state.showGrid, state.gridSizeCm, ready]);
 
   const flash = (message) => {
     setNotice(message);
@@ -48,10 +53,21 @@ export default function GardenApp() {
   }, [state.crops, cropSearch]);
 
   const calendarCrops = useMemo(() => {
-    if (calendarFilter === "planted") return state.crops.filter((crop) => plantedCropIds.has(crop.id));
-    if (calendarFilter === "sow") return state.crops.filter((crop) => monthRange(crop.sowStart, crop.sowEnd).includes(currentMonth));
-    return state.crops;
-  }, [state.crops, state.beds, calendarFilter]);
+    return filterCalendarCrops(state.crops, state.beds, calendarFilter, currentMonth, calendarBedId);
+  }, [state.crops, state.beds, calendarFilter, calendarBedId, currentMonth]);
+
+  const calendarEmptyMessage = calendarFilter === "sow"
+    ? "In diesem Monat sind keine Kulturen zur Aussaat vorgesehen."
+    : calendarFilter === "planted" && calendarBedId !== "all"
+      ? "In diesem Beet sind noch keine Kulturen vorhanden."
+      : calendarFilter === "planted"
+        ? "In den Beeten sind noch keine Kulturen vorhanden."
+        : "Für diesen Filter sind noch keine Kulturen vorhanden.";
+
+  const paletteCrops = useMemo(() => {
+    if (paletteRatingFilter === "all") return state.crops;
+    return state.crops.filter((crop) => crop.rating === Number(paletteRatingFilter));
+  }, [state.crops, paletteRatingFilter]);
 
   const addBed = (event) => {
     event.preventDefault();
@@ -67,6 +83,8 @@ export default function GardenApp() {
   const deleteBed = (bedId) => {
     setState((prev) => ({ ...prev, beds: prev.beds.filter((bed) => bed.id !== bedId) }));
     setSelectedPlant((current) => current?.bedId === bedId ? null : current);
+    if (calendarBedId === bedId) setCalendarBedId("all");
+    if (state.beds.length === 1) setCalendarFilter("all");
     flash("Beet entfernt.");
   };
 
@@ -250,6 +268,7 @@ export default function GardenApp() {
       harvestStart: Number(cropDraft.harvestStart),
       harvestEnd: Number(cropDraft.harvestEnd),
       spacing: Math.max(1, Number(cropDraft.spacing) || 1),
+      rating: normalizeRating(cropDraft.rating),
     };
     setState((prev) => ({
       ...prev,
@@ -278,8 +297,22 @@ export default function GardenApp() {
     flash("Kultur und zugehörige Einträge entfernt.");
   };
 
+  const confirmDeletion = () => {
+    if (deleteRequest?.type === "bed") deleteBed(deleteRequest.id);
+    if (deleteRequest?.type === "crop") deleteCrop(deleteRequest.id);
+    setDeleteRequest(null);
+  };
+
+  const updateCropRating = (cropId, rating) => {
+    setState((prev) => ({
+      ...prev,
+      crops: prev.crops.map((crop) => crop.id === cropId ? { ...crop, rating: normalizeRating(rating) } : crop),
+    }));
+    flash("Bewertung gespeichert.");
+  };
+
   const exportGarden = () => {
-    const blob = new Blob([JSON.stringify({ beds: state.beds, crops: state.crops, showSpacing: state.showSpacing, showGrid: state.showGrid, gridSizeCm: state.gridSizeCm }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ beds: state.beds, crops: state.crops, showSpacing: state.showSpacing, spacingTransparency: state.spacingTransparency, showGrid: state.showGrid, gridSizeCm: state.gridSizeCm }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -298,8 +331,11 @@ export default function GardenApp() {
       setState((prev) => ({
         ...prev,
         beds: normalizeBeds(data.beds),
-        crops: data.crops,
+        crops: normalizeCrops(data.crops),
         showSpacing: data.showSpacing !== false,
+        spacingTransparency: Number.isFinite(Number(data.spacingTransparency))
+          ? Math.min(100, Math.max(0, Number(data.spacingTransparency)))
+          : 25,
         showGrid: data.showGrid === true,
         gridSizeCm: Math.min(100, Math.max(5, Number(data.gridSizeCm) || 20)),
       }));
@@ -360,31 +396,48 @@ export default function GardenApp() {
           <div className="section-heading">
             <div><span className="section-kicker">Flächen</span><h2 id="beete-title">Beetplanung</h2></div>
             <div className="bed-heading-tools">
-              <p>Pflanzen einzeln ins Beet ziehen und an ihrer späteren Position ablegen.</p>
               <div className="planner-controls">
-                <label className="distance-toggle">
-                  <input type="checkbox" checked={state.showSpacing} onChange={(event) => setState((prev) => ({ ...prev, showSpacing: event.target.checked }))} />
-                  <span aria-hidden="true"><i /></span>
-                  <b>Pflanzabstände</b>
-                </label>
-                <label className="distance-toggle">
-                  <input type="checkbox" checked={state.showGrid} onChange={(event) => updateGridSettings(event.target.checked, state.gridSizeCm)} />
-                  <span aria-hidden="true"><i /></span>
-                  <b>Raster &amp; Einrasten</b>
-                </label>
-                <label className="grid-size-control">
-                  <span>Rasterweite</span>
-                  <input
-                    type="range"
-                    min="5"
-                    max="100"
-                    step="5"
-                    value={state.gridSizeCm}
-                    disabled={!state.showGrid}
-                    onChange={(event) => updateGridSettings(true, Number(event.target.value))}
-                  />
-                  <output>{state.gridSizeCm} cm</output>
-                </label>
+                <div className="planner-control-group">
+                  <label className="distance-toggle">
+                    <input type="checkbox" checked={state.showSpacing} onChange={(event) => setState((prev) => ({ ...prev, showSpacing: event.target.checked }))} />
+                    <span aria-hidden="true"><i /></span>
+                    <b>Pflanzabstände</b>
+                  </label>
+                  <label className="grid-size-control spacing-transparency-control">
+                    <span>Transparenz</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={state.spacingTransparency}
+                      disabled={!state.showSpacing}
+                      aria-label="Transparenz der Pflanzabstände"
+                      onChange={(event) => setState((prev) => ({ ...prev, spacingTransparency: Number(event.target.value) }))}
+                    />
+                    <output>{state.spacingTransparency} %</output>
+                  </label>
+                </div>
+                <div className="planner-control-group">
+                  <label className="distance-toggle">
+                    <input type="checkbox" checked={state.showGrid} onChange={(event) => updateGridSettings(event.target.checked, state.gridSizeCm)} />
+                    <span aria-hidden="true"><i /></span>
+                    <b>Raster &amp; Einrasten</b>
+                  </label>
+                  <label className="grid-size-control">
+                    <span>Rasterweite</span>
+                    <input
+                      type="range"
+                      min="5"
+                      max="100"
+                      step="5"
+                      value={state.gridSizeCm}
+                      disabled={!state.showGrid}
+                      onChange={(event) => updateGridSettings(true, Number(event.target.value))}
+                    />
+                    <output>{state.gridSizeCm} cm</output>
+                  </label>
+                </div>
               </div>
             </div>
           </div>
@@ -416,14 +469,40 @@ export default function GardenApp() {
                   <article className="bed-card" key={bed.id}>
                     <div className="bed-card-head">
                       <div><span>{bed.width} × {bed.length} m · {(bed.width * bed.length).toFixed(1)} m²</span><h3>{bed.name}</h3></div>
-                      <button className="icon-button" type="button" title="Beet entfernen" aria-label={`${bed.name} entfernen`} onClick={() => deleteBed(bed.id)}>×</button>
+                      <button
+                        className="icon-button"
+                        type="button"
+                        title="Beet entfernen"
+                        aria-label={`${bed.name} entfernen`}
+                        onClick={() => setDeleteRequest({
+                          type: "bed",
+                          id: bed.id,
+                          title: `Beet „${bed.name}“ löschen?`,
+                          message: "Das Beet und alle darin platzierten Pflanzen werden endgültig entfernt.",
+                        })}
+                      >×</button>
                     </div>
 
                     <div className="bed-editor">
                       <aside className="plant-palette" aria-label={`Pflanzen für ${bed.name}`}>
-                        <div className="palette-head"><b>Pflanzen</b><span>Ziehen oder antippen</span></div>
+                        <div className="palette-head">
+                          <div><b>Pflanzen</b><span>Ziehen oder antippen</span></div>
+                          <div className="palette-rating-filter" role="group" aria-label="Pflanzen nach Bewertung filtern">
+                            {[['all', 'Alle'], ['1', '★'], ['2', '★★'], ['3', '★★★']].map(([value, label]) => (
+                              <button
+                                type="button"
+                                key={value}
+                                className={paletteRatingFilter === value ? "active" : ""}
+                                aria-pressed={paletteRatingFilter === value}
+                                onClick={() => setPaletteRatingFilter(value)}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                         <div className="palette-list">
-                          {state.crops.map((crop) => (
+                          {paletteCrops.map((crop) => (
                             <button
                               type="button"
                               className="palette-crop"
@@ -438,10 +517,11 @@ export default function GardenApp() {
                               title={`${crop.name} ins Beet setzen`}
                             >
                               <i style={{ background: crop.color }}>{crop.icon}</i>
-                              <span><b>{crop.name}</b><small>{crop.spacing} cm Abstand</small></span>
+                              <span><b>{crop.name}</b><small>{crop.spacing} cm Abstand · {"★".repeat(crop.rating)}</small></span>
                               <em aria-hidden="true">⠿</em>
                             </button>
                           ))}
+                          {paletteCrops.length === 0 && <p className="palette-empty">Keine Kultur mit dieser Bewertung.</p>}
                         </div>
                       </aside>
 
@@ -474,7 +554,7 @@ export default function GardenApp() {
                             )}
 
                             {state.showSpacing && (
-                              <svg className="distance-layer" viewBox={`0 0 ${bedLengthCm} ${bedWidthCm}`} preserveAspectRatio="none" aria-hidden="true">
+                              <svg className="distance-layer" style={{ opacity: (100 - state.spacingTransparency) / 100 }} viewBox={`0 0 ${bedLengthCm} ${bedWidthCm}`} preserveAspectRatio="none" aria-hidden="true">
                                 {(bed.plantings || []).map((planting) => {
                                   const crop = state.crops.find((item) => item.id === planting.cropId);
                                   if (!crop) return null;
@@ -551,8 +631,30 @@ export default function GardenApp() {
         <section className="workspace" aria-labelledby="kalender-title">
           <div className="section-heading calendar-heading">
             <div><span className="section-kicker">Jahreslauf</span><h2 id="kalender-title">Pflanz- &amp; Erntekalender</h2></div>
-            <div className="segmented">
-              {[['all', 'Alle'], ['planted', 'Im Beet'], ['sow', 'Jetzt säen']].map(([value, label]) => <button key={value} className={calendarFilter === value ? "active" : ""} onClick={() => setCalendarFilter(value)}>{label}</button>)}
+            <div className="calendar-filters">
+              <div className="segmented" role="group" aria-label="Kalender filtern">
+                {[['all', 'Alle'], ['planted', 'Im Beet'], ['sow', 'Jetzt säen']].map(([value, label]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={calendarFilter === value ? "active" : ""}
+                    aria-pressed={calendarFilter === value}
+                    disabled={value === "planted" && state.beds.length === 0}
+                    onClick={() => setCalendarFilter(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {calendarFilter === "planted" && (
+                <label className="calendar-bed-filter">
+                  <span>Beet</span>
+                  <select value={calendarBedId} onChange={(event) => setCalendarBedId(event.target.value)}>
+                    <option value="all">Alle Beete</option>
+                    {state.beds.map((bed) => <option key={bed.id} value={bed.id}>{bed.name}</option>)}
+                  </select>
+                </label>
+              )}
             </div>
           </div>
           <div className="legend"><span><i className="sow-dot" /> Aussaat &amp; Pflanzung</span><span><i className="harvest-dot" /> Erntefenster</span><span className="today-key"><i /> Aktueller Monat</span></div>
@@ -569,7 +671,7 @@ export default function GardenApp() {
                 })}
               </div>
             ))}
-            {calendarCrops.length === 0 && <div className="calendar-empty">Für diesen Filter sind noch keine Kulturen vorhanden.</div>}
+            {calendarCrops.length === 0 && <div className="calendar-empty">{calendarEmptyMessage}</div>}
           </div>
         </section>
       )}
@@ -589,8 +691,20 @@ export default function GardenApp() {
                     <h3>{crop.name}</h3>
                     <p>{crop.note || "Keine Notiz hinterlegt."}</p>
                     <div className="culture-meta"><span>{crop.growingProfile === "greenhouse" ? "Gewächshaus" : "Freiland"}</span><span>Aussaat {MONTHS[crop.sowStart - 1]}–{MONTHS[crop.sowEnd - 1]}</span><span>Ernte {MONTHS[crop.harvestStart - 1]}–{MONTHS[crop.harvestEnd - 1]}</span><span>{crop.spacing} cm Abstand</span></div>
+                    <StarRating value={crop.rating} onChange={(rating) => updateCropRating(crop.id, rating)} label={`${crop.name} bewerten`} />
                   </div>
-                  <div className="card-actions"><button onClick={() => beginEditCrop(crop)}>Bearbeiten</button><button className="danger" onClick={() => deleteCrop(crop.id)}>Löschen</button></div>
+                  <div className="card-actions">
+                    <button onClick={() => beginEditCrop(crop)}>Bearbeiten</button>
+                    <button
+                      className="danger"
+                      onClick={() => setDeleteRequest({
+                        type: "crop",
+                        id: crop.id,
+                        title: `Kultur „${crop.name}“ löschen?`,
+                        message: "Die Kultur und alle zugehörigen Pflanzungen in den Beeten werden endgültig entfernt.",
+                      })}
+                    >Löschen</button>
+                  </div>
                 </article>
               ))}
             </div>
@@ -622,6 +736,7 @@ export default function GardenApp() {
               </div>
               <p className="phase-note">Richtwerte für ein gemäßigtes mitteleuropäisches Klima. Sorte, Frostlage und aktuelles Wetter können Abweichungen erfordern.</p>
               <label><span>Pflanzabstand (cm)</span><input type="number" min="1" value={cropDraft.spacing} onChange={(e) => setCropDraft({ ...cropDraft, spacing: e.target.value })} /></label>
+              <label className="rating-field"><span>Bewertung</span><StarRating value={normalizeRating(cropDraft.rating)} onChange={(rating) => setCropDraft({ ...cropDraft, rating })} label="Bewertung der Kultur" /></label>
               <label><span>Notiz</span><textarea rows="3" value={cropDraft.note} onChange={(e) => setCropDraft({ ...cropDraft, note: e.target.value })} placeholder="Standort, Pflege oder Besonderheiten" /></label>
               <div className="form-buttons">
                 {editingCrop && <button type="button" className="button ghost" onClick={() => { setEditingCrop(null); setCropDraft(EMPTY_CROP); setPhaseStatus({ type: "idle" }); }}>Abbrechen</button>}
@@ -634,6 +749,7 @@ export default function GardenApp() {
 
       <footer><span>Mein Gemüsegarten</span><p>Alle Daten bleiben in diesem Browser gespeichert.</p><span>Version 1.2</span></footer>
       {notice && <div className="toast" role="status">✓ {notice}</div>}
+      <ConfirmDialog request={deleteRequest} onCancel={() => setDeleteRequest(null)} onConfirm={confirmDeletion} />
     </main>
   );
 }

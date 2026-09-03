@@ -8,6 +8,14 @@ export function clamp(value, min = 0, max = 100) {
   return Math.min(max, Math.max(min, value));
 }
 
+export function normalizeRating(value) {
+  return clamp(Math.round(Number(value) || 1), 1, 3);
+}
+
+export function normalizeCrops(crops) {
+  return crops.map((crop) => ({ ...crop, rating: normalizeRating(crop.rating) }));
+}
+
 function snapCoordinate(percent, axisLengthCm, gridSizeCm) {
   const positionCm = (clamp(percent) / 100) * axisLengthCm;
   const snappedCm = Math.round(positionCm / gridSizeCm) * gridSizeCm;
@@ -36,6 +44,21 @@ export function monthRange(start, end) {
     ...Array.from({ length: 13 - start }, (_, index) => start + index),
     ...Array.from({ length: end }, (_, index) => index + 1),
   ];
+}
+
+export function filterCalendarCrops(crops, beds, filter, currentMonth, bedId = "all") {
+  if (filter === "sow") {
+    return crops.filter((crop) => monthRange(crop.sowStart, crop.sowEnd).includes(currentMonth));
+  }
+
+  if (filter !== "planted") return crops;
+
+  const relevantBeds = bedId === "all" ? beds : beds.filter((bed) => bed.id === bedId);
+  const plantedCropIds = new Set(
+    relevantBeds.flatMap((bed) => (bed.plantings ?? []).map((planting) => planting.cropId)),
+  );
+
+  return crops.filter((crop) => plantedCropIds.has(crop.id));
 }
 
 export function normalizeCultureName(value) {
