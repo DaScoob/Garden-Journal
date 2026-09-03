@@ -1000,7 +1000,11 @@ export default function GardenApp() {
     <main className="app-shell" data-theme={theme}>
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark" aria-hidden="true"><span>✦</span></div>
+          <img
+            className="brand-logo"
+            src="/pompui-gartenjournal-logo.png"
+            alt="POMPUI GartenJournal"
+          />
           <div><p>Gartenjournal</p><h1>Mein Gemüsegarten</h1></div>
         </div>
         <div className="header-actions">
