@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { clamp, filterCalendarCrops, findCultureProfile, monthRange, normalizeBeds, normalizeCrops, normalizeRating, snapPositionToGrid } from "../app/lib/garden-utils.js";
+import { clamp, filterCalendarCrops, findCultureProfile, getGroupBounds, getGroupMemberIds, getSpacingOverlapIds, monthRange, normalizeBeds, normalizeCrops, normalizeGroups, normalizeRating, snapPositionToGrid, snapPositionToGroupGrid, splitPathCells } from "../app/lib/garden-utils.js";
 import { loadGarden, saveGarden, STORAGE_KEY } from "../app/lib/garden-storage.js";
 
 test("monthRange returns a range within one year", () => {
@@ -53,6 +53,49 @@ test("snapPositionToGrid uses physically square centimeter cells", () => {
   );
 });
 
+test("groups retain valid unique members and use their own grid", () => {
+  const plantings = [{ id: "a", cropId: "tomate", x: 10, y: 10 }, { id: "b", cropId: "salat", x: 30, y: 30 }];
+  const [group] = normalizeGroups([{ id: "g", plantingIds: ["a", "b", "missing"], gridSizeCm: 25 }], plantings);
+  assert.deepEqual(group.members, [{ type: "planting", id: "a" }, { type: "planting", id: "b" }]);
+  assert.deepEqual(getGroupMemberIds(group, "planting"), ["a", "b"]);
+  assert.deepEqual(snapPositionToGroupGrid({ x: 24, y: 26 }, group, { length: 2, width: 1 }, 25), { x: 22.5, y: 35 });
+  assert.deepEqual(
+    getGroupBounds(group, plantings, [], [{ id: "tomate", spacing: 40 }, { id: "salat", spacing: 20 }], { length: 2, width: 1 }),
+    { left: 0, top: 0, right: 35, bottom: 40, width: 35, height: 40 },
+  );
+});
+
+test("path cells form separate four-directional path elements", () => {
+  let nextId = 0;
+  const paths = splitPathCells([
+    { column: 0, row: 0 },
+    { column: 1, row: 0 },
+    { column: 3, row: 2 },
+  ], 20, { length: 1, width: 1 }, () => `weg-${++nextId}`);
+  assert.equal(paths.length, 2);
+  assert.deepEqual(paths[0].cells, [{ column: 0, row: 0 }, { column: 1, row: 0 }]);
+  assert.deepEqual(paths[1].cells, [{ column: 0, row: 0 }]);
+});
+
+test("groups can contain plants and paths", () => {
+  const plantings = [{ id: "pflanze", cropId: "tomate", x: 50, y: 50 }];
+  const paths = [{ id: "weg", cellSizeCm: 20, originX: 0, originY: 0, cells: [{ column: 0, row: 0 }] }];
+  const [group] = normalizeGroups([{ id: "gruppe", members: [{ type: "planting", id: "pflanze" }, { type: "path", id: "weg" }] }], plantings, paths);
+  assert.deepEqual(group.members, [{ type: "planting", id: "pflanze" }, { type: "path", id: "weg" }]);
+});
+
+test("spacing overlaps are reported only between moving and stationary plants", () => {
+  const crops = [{ id: "tomate", spacing: 40 }];
+  const bed = { length: 2, width: 1 };
+  const plantings = [
+    { id: "a", cropId: "tomate", x: 20, y: 50 },
+    { id: "b", cropId: "tomate", x: 35, y: 50 },
+    { id: "c", cropId: "tomate", x: 90, y: 50 },
+  ];
+  assert.deepEqual(getSpacingOverlapIds(plantings, crops, bed, ["a"]), ["a", "b"]);
+  assert.deepEqual(getSpacingOverlapIds(plantings, crops, bed, ["a", "b"]), []);
+});
+
 test("normalizeBeds expands legacy planting counts", () => {
   let nextId = 0;
   const [bed] = normalizeBeds([
@@ -72,13 +115,21 @@ test("garden storage falls back safely and persists only durable state", () => {
   };
 
   assert.deepEqual(loadGarden(storage).beds, []);
-  saveGarden(storage, { beds: [{ id: "beet-1" }], crops: [], showSpacing: false, spacingTransparency: 100, showGrid: true, gridSizeCm: 25, activeTab: "kalender" });
-  assert.deepEqual(JSON.parse(values.get(STORAGE_KEY)), {
-    beds: [{ id: "beet-1" }],
-    crops: [],
+  values.set(STORAGE_KEY, JSON.stringify({
+    beds: [{ id: "alt", width: 1, length: 2, plantings: [] }],
+    crops: [{ id: "tomate" }],
     showSpacing: false,
-    spacingTransparency: 100,
     showGrid: true,
     gridSizeCm: 25,
+  }));
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(loadGarden(storage).beds[0]).filter(([key]) => ["showSpacing", "showGrid", "gridSizeCm"].includes(key))),
+    { showSpacing: false, showGrid: true, gridSizeCm: 25 },
+  );
+  saveGarden(storage, { beds: [{ id: "beet-1", showSpacing: false, showGrid: true, gridSizeCm: 25 }], crops: [], spacingTransparency: 100, activeTab: "kalender" });
+  assert.deepEqual(JSON.parse(values.get(STORAGE_KEY)), {
+    beds: [{ id: "beet-1", showSpacing: false, showGrid: true, gridSizeCm: 25 }],
+    crops: [],
+    spacingTransparency: 100,
   });
 });

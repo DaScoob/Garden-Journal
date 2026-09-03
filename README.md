@@ -1,6 +1,6 @@
 # Mein Gartenjournal
 
-Interaktive Gartenplanung mit Beeteditor, Pflanz- und Erntekalender sowie einer anpassbaren Kulturbibliothek. Die Daten werden ausschließlich im Browser gespeichert und können als JSON-Datei exportiert oder importiert werden.
+Interaktive Gartenplanung mit Beeteditor, rasterbasierten Wegen, Pflanz- und Erntekalender sowie einer anpassbaren Kulturbibliothek. Pflanzen und Wege können ausgewählt, gemeinsam verschoben und in gemischten Gruppen organisiert werden. Die Daten werden ausschließlich im Browser gespeichert und können als JSON-Datei exportiert oder importiert werden.
 
 ## Entwicklung
 
@@ -29,4 +29,4 @@ npm run check
 
 ## Datenhaltung
 
-Beete, Kulturen und Einstellungen liegen unter dem Schlüssel `gemuesegarten-v1` im `localStorage`. Das vorhandene Datenformat bleibt bei Aktualisierungen rückwärtskompatibel; ältere Pflanzungen mit Mengenangabe werden beim Laden in einzeln positionierbare Pflanzen überführt.
+Beete, Kulturen, Wege, Gruppen und Einstellungen liegen unter dem Schlüssel `gemuesegarten-v1` im `localStorage`. Das vorhandene Datenformat bleibt bei Aktualisierungen rückwärtskompatibel; ältere Pflanzungen mit Mengenangabe werden beim Laden in einzeln positionierbare Pflanzen und frühere Pflanzengruppen in das gemeinsame Elementmodell überführt.

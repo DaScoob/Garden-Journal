@@ -9,7 +9,7 @@ function normalizeTransparency(value) {
 }
 
 export function createInitialGarden() {
-  return { beds: [], crops: DEFAULT_CROPS, activeTab: "beete", showSpacing: true, spacingTransparency: 25, showGrid: false, gridSizeCm: 20 };
+  return { beds: [], crops: DEFAULT_CROPS, activeTab: "beete", spacingTransparency: 25 };
 }
 
 export function loadGarden(storage = globalThis.localStorage) {
@@ -21,13 +21,14 @@ export function loadGarden(storage = globalThis.localStorage) {
 
     const parsedGarden = JSON.parse(rawGarden);
     return {
-      beds: Array.isArray(parsedGarden.beds) ? normalizeBeds(parsedGarden.beds) : [],
+      beds: Array.isArray(parsedGarden.beds) ? normalizeBeds(parsedGarden.beds, undefined, {
+        showSpacing: parsedGarden.showSpacing !== false,
+        showGrid: parsedGarden.showGrid === true,
+        gridSizeCm: Math.min(100, Math.max(5, Number(parsedGarden.gridSizeCm) || 20)),
+      }) : [],
       crops: Array.isArray(parsedGarden.crops) && parsedGarden.crops.length ? normalizeCrops(parsedGarden.crops) : DEFAULT_CROPS,
       activeTab: "beete",
-      showSpacing: parsedGarden.showSpacing !== false,
       spacingTransparency: normalizeTransparency(parsedGarden.spacingTransparency),
-      showGrid: parsedGarden.showGrid === true,
-      gridSizeCm: Math.min(100, Math.max(5, Number(parsedGarden.gridSizeCm) || 20)),
     };
   } catch {
     return createInitialGarden();
@@ -38,9 +39,6 @@ export function saveGarden(storage, garden) {
   storage.setItem(STORAGE_KEY, JSON.stringify({
     beds: garden.beds,
     crops: garden.crops,
-    showSpacing: garden.showSpacing,
     spacingTransparency: garden.spacingTransparency,
-    showGrid: garden.showGrid,
-    gridSizeCm: garden.gridSizeCm,
   }));
 }
