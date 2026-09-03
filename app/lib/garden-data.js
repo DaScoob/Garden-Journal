@@ -11,7 +11,7 @@ export const DEFAULT_CROPS = [
   { id: "knoblauch", name: "Knoblauch", icon: "Kn", color: "#8f7b9b", sowStart: 9, sowEnd: 11, harvestStart: 6, harvestEnd: 8, spacing: 12, note: "Herbststeckung ist für kräftige Knollen geeignet." },
   { id: "gruenkohl", name: "Grünkohl", icon: "G", color: "#356f4a", sowStart: 5, sowEnd: 7, harvestStart: 10, harvestEnd: 2, spacing: 50, note: "Winterhart; Ernte nach Bedarf bis ins Frühjahr." },
   { id: "radieschen", name: "Radieschen", icon: "R", color: "#c94d73", sowStart: 3, sowEnd: 9, harvestStart: 4, harvestEnd: 10, spacing: 5, note: "Kurze Kulturzeit, gut als Vor- und Nachkultur." },
-];
+].map((crop) => ({ ...crop, rating: 1 }));
 
 const cultureProfile = (name, aliases, outdoor, greenhouse, spacing, color) => ({
   name,
@@ -63,4 +63,4 @@ export const CULTURE_PROFILES = [
 ];
 
 export const EMPTY_BED = Object.freeze({ name: "", width: 1.2, length: 3 });
-export const EMPTY_CROP = Object.freeze({ name: "", icon: "", color: "#56845f", growingProfile: "outdoor", sowStart: 3, sowEnd: 5, harvestStart: 6, harvestEnd: 9, spacing: 30, note: "" });
+export const EMPTY_CROP = Object.freeze({ name: "", icon: "", color: "#56845f", growingProfile: "outdoor", sowStart: 3, sowEnd: 5, harvestStart: 6, harvestEnd: 9, spacing: 30, rating: 1, note: "" });
