@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { clamp, filterCalendarCrops, findCultureProfile, getGroupBounds, getGroupMemberIds, getSpacingOverlapIds, monthRange, normalizeBeds, normalizeCrops, normalizeGroups, normalizeRating, snapPositionToGrid, snapPositionToGroupGrid, splitPathCells } from "../app/lib/garden-utils.js";
+import { autoPlantPositions, calculateBedStatistics, clamp, cloneBed, filterCalendarCrops, findCultureProfile, getGroupBounds, getGroupMemberIds, getSpacingOverlapIds, monthRange, normalizeBeds, normalizeCrops, normalizeGroups, normalizeRating, snapPositionToGrid, snapPositionToGroupGrid, sortCrops, splitPathCells, updateGridConfiguration } from "../app/lib/garden-utils.js";
 import { loadGarden, saveGarden, STORAGE_KEY } from "../app/lib/garden-storage.js";
 
 test("monthRange returns a range within one year", () => {
@@ -43,7 +43,37 @@ test("culture ratings are normalized to one through three stars", () => {
   assert.equal(normalizeRating(0), 1);
   assert.equal(normalizeRating(2.4), 2);
   assert.equal(normalizeRating(7), 3);
-  assert.deepEqual(normalizeCrops([{ id: "tomate" }]), [{ id: "tomate", rating: 1 }]);
+  assert.deepEqual(normalizeCrops([{ id: "tomate", spacing: 50 }]), [{ id: "tomate", spacing: 50, minSpacing: 40, maxSpacing: 50, customSpacing: null, rating: 1 }]);
+});
+
+test("cultures can be sorted independently by name, rating and growing profile", () => {
+  const crops = [
+    { id: "z", name: "Zucchini", rating: 1, growingProfile: "outdoor" },
+    { id: "a", name: "Aubergine", rating: 3, growingProfile: "greenhouse" },
+    { id: "b", name: "Bohne", rating: 2, growingProfile: "outdoor" },
+  ];
+  assert.deepEqual(sortCrops(crops).map((crop) => crop.id), ["a", "b", "z"]);
+  assert.deepEqual(sortCrops(crops, { key: "rating", direction: "desc" }).map((crop) => crop.id), ["a", "b", "z"]);
+  assert.deepEqual(sortCrops(crops, { key: "profile", direction: "asc" }).map((crop) => crop.id), ["a", "b", "z"]);
+});
+
+test("bed statistics keep utilization unbounded while clipping only the free-area calculation", () => {
+  const crops = [{ id: "busch", name: "Busch", maxSpacing: 120 }];
+  const bed = {
+    length: 1,
+    width: 1,
+    plantings: [
+      { id: "p1", cropId: "busch", x: 0, y: 50, spacingCm: 120 },
+      { id: "p2", cropId: "busch", x: 0, y: 50, spacingCm: 120 },
+    ],
+    paths: [{ id: "w1", originX: 80, originY: 80, cellSizeCm: 20, cells: [{ column: 0, row: 0 }] }],
+  };
+  const stats = calculateBedStatistics(bed, crops, 160);
+  assert.ok(stats.utilizationPercent > 225);
+  assert.ok(stats.freePercent > 35 && stats.freePercent < 50);
+  assert.equal(stats.pathLengthCm, 20);
+  assert.equal(stats.pathAreaM2, 0.04);
+  assert.deepEqual(stats.cropCounts.map(({ crop, count }) => [crop.id, count]), [["busch", 2]]);
 });
 
 test("snapPositionToGrid uses physically square centimeter cells", () => {
@@ -51,6 +81,27 @@ test("snapPositionToGrid uses physically square centimeter cells", () => {
     snapPositionToGrid({ x: 47, y: 48 }, { length: 3, width: 1.2 }, 20),
     { x: 46.666666666666664, y: 50 },
   );
+});
+
+test("changing bed and group grid sizes preserves every existing item position", () => {
+  const bed = {
+    id: "beet",
+    showGrid: true,
+    gridSizeCm: 20,
+    plantings: [{ id: "p1", x: 17.25, y: 63.5 }],
+    paths: [{ id: "w1", originX: 12.5, originY: 44.75 }],
+    groups: [{ id: "g1", gridSizeCm: 15, originX: 11.2, originY: 43.8, members: [] }],
+  };
+  const bedGridChanged = updateGridConfiguration(bed, true, 40);
+  const groupGridChanged = updateGridConfiguration(bedGridChanged, true, 35, "g1");
+  assert.deepEqual(groupGridChanged.plantings, bed.plantings);
+  assert.deepEqual(groupGridChanged.paths, bed.paths);
+  assert.deepEqual(
+    { originX: groupGridChanged.groups[0].originX, originY: groupGridChanged.groups[0].originY },
+    { originX: bed.groups[0].originX, originY: bed.groups[0].originY },
+  );
+  assert.equal(groupGridChanged.gridSizeCm, 40);
+  assert.equal(groupGridChanged.groups[0].gridSizeCm, 35);
 });
 
 test("groups retain valid unique members and use their own grid", () => {
@@ -105,6 +156,27 @@ test("normalizeBeds expands legacy planting counts", () => {
   assert.equal(bed.plantings.length, 2);
   assert.equal(bed.plantings[0].id, "alt");
   assert.equal(bed.plantings[1].id, "neu-1");
+});
+
+test("cloneBed creates independent ids and supports selectable settings and contents", () => {
+  let nextId = 0;
+  const source = { id: "beet", name: "Nord", plantings: [{ id: "p1" }], paths: [{ id: "w1", cells: [{ column: 0, row: 0 }] }], groups: [{ id: "g1", members: [{ type: "planting", id: "p1" }, { type: "path", id: "w1" }] }] };
+  const copy = cloneBed(source, (prefix) => `${prefix}-${++nextId}`);
+  assert.equal(copy.name, "Nord – Kopie");
+  assert.notEqual(copy.plantings[0].id, source.plantings[0].id);
+  assert.deepEqual(copy.groups[0].members.map((member) => member.id), [copy.plantings[0].id, copy.paths[0].id]);
+  const emptyCopy = cloneBed({ ...source, showSpacing: false, showGrid: true, gridSizeCm: 35 }, (prefix) => `${prefix}-${++nextId}`, { includeSettings: false, includeContents: false });
+  assert.deepEqual({ showSpacing: emptyCopy.showSpacing, showGrid: emptyCopy.showGrid, gridSizeCm: emptyCopy.gridSizeCm }, { showSpacing: true, showGrid: false, gridSizeCm: 20 });
+  assert.deepEqual({ plantings: emptyCopy.plantings, paths: emptyCopy.paths, groups: emptyCopy.groups }, { plantings: [], paths: [], groups: [] });
+});
+
+test("autoPlantPositions keeps radii inside the frame and ignores existing contents", () => {
+  const crops = [{ id: "salat", spacing: 20, minSpacing: 20, maxSpacing: 20 }];
+  const bed = { length: 1, width: 1, plantings: [{ id: "alt", cropId: "salat", x: 30, y: 30, spacingCm: 20 }], paths: [] };
+  const positions = autoPlantPositions({ bed, crops, spacingCm: 20, layout: "grid", frame: { start: { x: 0, y: 0 }, current: { x: 100, y: 100 } } });
+  assert.equal(positions.length, 25);
+  assert.ok(positions.every((position) => position.x >= 10 && position.x <= 90 && position.y >= 10 && position.y <= 90));
+  assert.ok(positions.some((position) => position.x === 30 && position.y === 30));
 });
 
 test("garden storage falls back safely and persists only durable state", () => {

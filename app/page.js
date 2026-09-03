@@ -7,12 +7,57 @@ import { ConfirmDialog } from "./components/confirm-dialog.js";
 import { StarRating } from "./components/star-rating.js";
 import { CULTURE_PROFILES, DEFAULT_CROPS, EMPTY_BED, EMPTY_CROP, MONTHS, MONTHS_LONG } from "./lib/garden-data.js";
 import { loadGarden, saveGarden } from "./lib/garden-storage.js";
-import { clamp, createId, filterCalendarCrops, findCultureProfile, getGroupBounds, getGroupMemberIds, getPathBounds, getSpacingOverlapIds, monthRange, normalizeBeds, normalizeCrops, normalizeGroups, normalizeRating, snapPositionToGrid, snapPositionToGroupGrid, splitPathCells } from "./lib/garden-utils.js";
+import { autoPlantPositions, calculateBedStatistics, clamp, cloneBed, createId, filterCalendarCrops, findCultureProfile, getGroupBounds, getGroupMemberIds, getPathBounds, getSpacingOverlapIds, monthRange, normalizeBeds, normalizeCrops, normalizeGroups, normalizeRating, snapPositionToGrid, snapPositionToGroupGrid, sortCrops, splitPathCells, updateGridConfiguration } from "./lib/garden-utils.js";
 
 const EMPTY_SELECTION = { bedId: null, plantingIds: [], pathIds: [], groupId: null };
+const THEME_STORAGE_KEY = "gemuesegarten-theme";
+
+function GreenhouseIcon({ title }) {
+  return (
+    <svg className="greenhouse-icon" viewBox="0 0 18 19" aria-hidden={title ? undefined : "true"} role={title ? "img" : undefined}>
+      {title && <title>{title}</title>}
+      <path d="M1.5 8.1 9 1.4l7.5 6.7v3.15a7.5 7.5 0 0 1-15 0Z" />
+      <path d="M9 2.4v15.1M2.3 8.2h13.4" />
+    </svg>
+  );
+}
+
+function SortControls({ value, onChange, label }) {
+  const options = [
+    { key: "name", icon: "A", title: "Alphabetisch" },
+    { key: "rating", icon: "★", title: "Nach Sternen" },
+    { key: "profile", icon: <GreenhouseIcon />, title: "Nach Anbauart" },
+  ];
+  return (
+    <div className="sort-controls" role="group" aria-label={label}>
+      {options.map((option) => (
+        <button
+          type="button"
+          key={option.key}
+          className={value.key === option.key ? "active" : ""}
+          aria-pressed={value.key === option.key}
+          aria-label={`${option.title}, ${value.key === option.key && value.direction === "desc" ? "absteigend" : "aufsteigend"}`}
+          title={option.title}
+          onClick={() => onChange((current) => current.key === option.key ? { key: option.key, direction: current.direction === "asc" ? "desc" : "asc" } : { key: option.key, direction: "asc" })}
+        >
+          <span aria-hidden="true">{option.icon}</span>
+          {value.key === option.key && <small aria-hidden="true">{value.direction === "asc" ? "↑" : "↓"}</small>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function formatNumber(value, digits = 1) {
+  return Number(value).toLocaleString("de-DE", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+function formatApproximateLength(lengthCm) {
+  return lengthCm >= 100 ? `${formatNumber(lengthCm / 100)} m` : `${Math.round(lengthCm)} cm`;
+}
 
 export default function GardenApp() {
-  const [state, setState] = useState({ beds: [], crops: DEFAULT_CROPS, activeTab: "beete", spacingTransparency: 25 });
+  const [state, setState] = useState({ beds: [], crops: DEFAULT_CROPS, activeTab: "beete", spacingTransparency: 25, autoPlantPreferences: { spacingMode: "max", layout: "hex" } });
   const [ready, setReady] = useState(false);
   const [bedDraft, setBedDraft] = useState(EMPTY_BED);
   const [cropDraft, setCropDraft] = useState(EMPTY_CROP);
@@ -25,28 +70,46 @@ export default function GardenApp() {
   const [undoState, setUndoState] = useState(null);
   const [draggingOutside, setDraggingOutside] = useState(false);
   const [pathDraft, setPathDraft] = useState(null);
+  const [autoPlantDraft, setAutoPlantDraft] = useState(null);
+  const [editingBed, setEditingBed] = useState(null);
+  const [duplicateBedDraft, setDuplicateBedDraft] = useState(null);
+  const [fullscreenBedId, setFullscreenBedId] = useState(null);
+  const [theme, setTheme] = useState("dark");
+  const [themeReady, setThemeReady] = useState(false);
   const [cropSearch, setCropSearch] = useState("");
   const [calendarFilter, setCalendarFilter] = useState("all");
   const [calendarBedId, setCalendarBedId] = useState("all");
   const [paletteRatingFilter, setPaletteRatingFilter] = useState("all");
+  const [paletteSort, setPaletteSort] = useState({ key: "name", direction: "asc" });
+  const [cultureSort, setCultureSort] = useState({ key: "name", direction: "asc" });
   const [notice, setNotice] = useState("");
   const [deleteRequest, setDeleteRequest] = useState(null);
   const importRef = useRef(null);
   const movingPlantRef = useRef(null);
   const movingPathRef = useRef(null);
   const pathFrameRef = useRef(null);
+  const autoPlantFrameRef = useRef(null);
   const selectionFrameRef = useRef(null);
   const paletteClickTimerRef = useRef(null);
 
   useEffect(() => {
     setState(loadGarden());
+    const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    setTheme(storedTheme === "light" ? "light" : "dark");
+    setThemeReady(true);
     setReady(true);
   }, []);
 
   useEffect(() => {
+    if (!themeReady) return;
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme, themeReady]);
+
+  useEffect(() => {
     if (!ready) return;
     saveGarden(window.localStorage, state);
-  }, [state.beds, state.crops, state.spacingTransparency, ready]);
+  }, [state.beds, state.crops, state.spacingTransparency, state.autoPlantPreferences, ready]);
 
   useEffect(() => {
     if (!undoState) return undefined;
@@ -55,6 +118,20 @@ export default function GardenApp() {
   }, [undoState]);
 
   useEffect(() => () => window.clearTimeout(paletteClickTimerRef.current), []);
+
+  useEffect(() => {
+    if (!fullscreenBedId) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    const leaveFullscreen = (event) => {
+      if (event.key === "Escape") setFullscreenBedId(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", leaveFullscreen);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", leaveFullscreen);
+    };
+  }, [fullscreenBedId]);
 
   const flash = (message) => {
     setNotice(message);
@@ -68,8 +145,9 @@ export default function GardenApp() {
 
   const filteredCrops = useMemo(() => {
     const q = cropSearch.trim().toLowerCase();
-    return q ? state.crops.filter((crop) => `${crop.name} ${crop.note}`.toLowerCase().includes(q)) : state.crops;
-  }, [state.crops, cropSearch]);
+    const matches = q ? state.crops.filter((crop) => `${crop.name} ${crop.note}`.toLowerCase().includes(q)) : state.crops;
+    return sortCrops(matches, cultureSort);
+  }, [state.crops, cropSearch, cultureSort]);
 
   const calendarCrops = useMemo(() => {
     return filterCalendarCrops(state.crops, state.beds, calendarFilter, currentMonth, calendarBedId);
@@ -84,9 +162,13 @@ export default function GardenApp() {
         : "Für diesen Filter sind noch keine Kulturen vorhanden.";
 
   const paletteCrops = useMemo(() => {
-    if (paletteRatingFilter === "all") return state.crops;
-    return state.crops.filter((crop) => crop.rating === Number(paletteRatingFilter));
-  }, [state.crops, paletteRatingFilter]);
+    const matches = paletteRatingFilter === "all" ? state.crops : state.crops.filter((crop) => crop.rating === Number(paletteRatingFilter));
+    return sortCrops(matches, paletteSort);
+  }, [state.crops, paletteRatingFilter, paletteSort]);
+
+  const bedStatisticsById = useMemo(() => new Map(
+    state.beds.map((bed) => [bed.id, calculateBedStatistics(bed, state.crops)]),
+  ), [state.beds, state.crops]);
 
   const addBed = (event) => {
     event.preventDefault();
@@ -104,8 +186,29 @@ export default function GardenApp() {
     setSelection((current) => current.bedId === bedId ? EMPTY_SELECTION : current);
     if (pathDraft?.bedId === bedId) setPathDraft(null);
     if (calendarBedId === bedId) setCalendarBedId("all");
+    if (fullscreenBedId === bedId) setFullscreenBedId(null);
     if (state.beds.length === 1) setCalendarFilter("all");
     flash("Beet entfernt.");
+  };
+
+  const saveBedEdit = (event, bedId) => {
+    event.preventDefault();
+    const name = editingBed?.name?.trim();
+    const width = Number(editingBed?.width);
+    const length = Number(editingBed?.length);
+    if (!name || width < 0.2 || length < 0.2) return flash("Name und gültige Beetmaße werden benötigt.");
+    setState((prev) => ({ ...prev, beds: prev.beds.map((bed) => bed.id === bedId ? { ...bed, name, width, length } : bed) }));
+    setEditingBed(null);
+    flash("Beet aktualisiert.");
+  };
+
+  const duplicateBed = () => {
+    const bed = state.beds.find((item) => item.id === duplicateBedDraft?.bedId);
+    if (!bed) return;
+    const duplicate = cloneBed(bed, createId, duplicateBedDraft);
+    setState((prev) => ({ ...prev, beds: [...prev.beds, duplicate] }));
+    setDuplicateBedDraft(null);
+    flash("Beet als unabhängige Kopie dupliziert.");
   };
 
   const addPlantAt = (bedId, cropId, position) => {
@@ -124,6 +227,7 @@ export default function GardenApp() {
       id: createId("pflanze"),
       cropId,
       date: new Date().toISOString().slice(0, 10),
+      spacingCm: Number(crop.customSpacing) > 0 ? Number(crop.customSpacing) : crop.maxSpacing,
       ...plantPosition,
     };
     setState((prev) => ({
@@ -164,7 +268,7 @@ export default function GardenApp() {
       beds: prev.beds.map((bed) => bed.id === undoState.bed.id ? undoState.bed : bed),
     }));
     setUndoState(null);
-    flash("Löschen rückgängig gemacht.");
+    flash("Letzte Änderung rückgängig gemacht.");
   };
 
   const createGroup = (bedId, plantingIds, pathIds = []) => {
@@ -222,36 +326,7 @@ export default function GardenApp() {
   const updateGridSettings = (bedId, showGrid, gridSizeCm, groupId = null) => {
     setState((prev) => ({
       ...prev,
-      beds: prev.beds.map((bed) => {
-        if (bed.id !== bedId) return bed;
-        if (!showGrid) return { ...bed, showGrid: false };
-        if (groupId) {
-          const groups = (bed.groups ?? []).map((group) => group.id === groupId ? { ...group, gridSizeCm } : group);
-          const group = groups.find((item) => item.id === groupId);
-          if (!group) return { ...bed, showGrid: true };
-          const groupPlantingIds = new Set(getGroupMemberIds(group, "planting"));
-          const groupPathIds = new Set(getGroupMemberIds(group, "path"));
-          return {
-            ...bed,
-            showGrid: true,
-            groups,
-            plantings: bed.plantings.map((planting) => groupPlantingIds.has(planting.id)
-              ? { ...planting, ...snapPositionToGroupGrid(planting, group, bed, gridSizeCm) }
-              : planting),
-            paths: (bed.paths ?? []).map((path) => {
-              if (!groupPathIds.has(path.id)) return path;
-              const snapped = snapPositionToGroupGrid({ x: path.originX, y: path.originY }, group, bed, gridSizeCm);
-              return { ...path, originX: snapped.x, originY: snapped.y };
-            }),
-          };
-        }
-        return {
-          ...bed,
-          showGrid: true,
-          gridSizeCm,
-          plantings: bed.plantings.map((planting) => ({ ...planting, ...snapPositionToGrid(planting, bed, gridSizeCm) })),
-        };
-      }),
+      beds: prev.beds.map((bed) => bed.id === bedId ? updateGridConfiguration(bed, showGrid, gridSizeCm, groupId) : bed),
     }));
   };
 
@@ -264,9 +339,86 @@ export default function GardenApp() {
   };
 
   const startPathDrawing = (bed) => {
+    setAutoPlantDraft(null);
     setPathDraft({ bedId: bed.id, cellSizeCm: bed.gridSizeCm, cells: [], history: [], frame: null });
     setSelection(EMPTY_SELECTION);
     setEditingGroupId(null);
+  };
+
+  const startAutoPlant = (bed, crop) => {
+    if (!crop) return flash("Zuerst muss eine Kultur ausgewählt werden.");
+    const hasCustomSpacing = Number(crop.customSpacing) > 0;
+    setPathDraft(null);
+    setSelection(EMPTY_SELECTION);
+    setPaletteMenu(null);
+    setAutoPlantDraft({
+      bedId: bed.id,
+      cropId: crop.id,
+      spacingMode: hasCustomSpacing ? "custom" : state.autoPlantPreferences?.spacingMode ?? "max",
+      layout: state.autoPlantPreferences?.layout ?? "hex",
+      frame: null,
+    });
+  };
+
+  const updateAutoPlantSetting = (field, value) => {
+    setAutoPlantDraft((current) => current ? { ...current, [field]: value } : current);
+    setState((current) => ({
+      ...current,
+      autoPlantPreferences: { ...current.autoPlantPreferences, [field]: value },
+    }));
+  };
+
+  const stopAutoPlant = () => {
+    autoPlantFrameRef.current = null;
+    setAutoPlantDraft(null);
+  };
+
+  const autoPlantSpacing = (draft) => {
+    const crop = state.crops.find((item) => item.id === draft?.cropId);
+    if (!crop) return 1;
+    if (draft.spacingMode === "custom") return Math.max(1, Number(crop.customSpacing) || 1);
+    return draft.spacingMode === "max" ? crop.maxSpacing : crop.minSpacing;
+  };
+
+  const beginAutoPlantFrame = (event, bed) => {
+    if (autoPlantDraft?.bedId !== bed.id || (event.button !== 0 && event.pointerType === "mouse")) return;
+    const start = positionFromPointer(event, event.currentTarget);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    autoPlantFrameRef.current = { bedId: bed.id, start, current: start };
+    setAutoPlantDraft((current) => ({ ...current, frame: { start, current: start } }));
+  };
+
+  const continueAutoPlantFrame = (event, bed) => {
+    if (autoPlantFrameRef.current?.bedId !== bed.id) return;
+    const current = positionFromPointer(event, event.currentTarget);
+    autoPlantFrameRef.current.current = current;
+    setAutoPlantDraft((draft) => ({ ...draft, frame: { start: autoPlantFrameRef.current.start, current } }));
+  };
+
+  const finishAutoPlantFrame = (event, bed) => {
+    const frame = autoPlantFrameRef.current;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    autoPlantFrameRef.current = null;
+    if (!frame || frame.bedId !== bed.id || event.type === "pointercancel") {
+      setAutoPlantDraft((draft) => draft ? { ...draft, frame: null } : draft);
+      return;
+    }
+    const draft = autoPlantDraft;
+    const crop = state.crops.find((item) => item.id === draft?.cropId);
+    const spacingCm = autoPlantSpacing(draft);
+    if (!crop) return;
+    const positions = autoPlantPositions({ bed, spacingCm, layout: draft.layout, frame });
+    if (!positions.length) {
+      setAutoPlantDraft((current) => ({ ...current, frame: null }));
+      return flash("Im markierten Bereich ist kein freier Platz für eine vollständige Pflanze.");
+    }
+    const date = new Date().toISOString().slice(0, 10);
+    const plantings = positions.map((position) => ({ id: createId("pflanze"), cropId: crop.id, date, spacingCm, ...position }));
+    setState((prev) => ({ ...prev, beds: prev.beds.map((item) => item.id === bed.id ? { ...item, plantings: [...item.plantings, ...plantings] } : item) }));
+    setUndoState({ bed, message: `${plantings.length} ${crop.name}-Pflanzen angelegt.` });
+    setSelection({ bedId: bed.id, plantingIds: plantings.map((item) => item.id), pathIds: [], groupId: null });
+    setAutoPlantDraft((current) => ({ ...current, frame: null }));
+    flash(`${plantings.length} ${crop.name}-Pflanzen automatisch platziert.`);
   };
 
   const stopPathDrawing = () => {
@@ -702,7 +854,9 @@ export default function GardenApp() {
       name: name ?? prev.name,
       growingProfile,
       ...timing,
-      spacing: profile.spacing,
+      spacing: profile.maxSpacing,
+      minSpacing: profile.minSpacing,
+      maxSpacing: profile.maxSpacing,
       color: profile.color,
       icon: profile.name.slice(0, 2),
     }));
@@ -746,7 +900,10 @@ export default function GardenApp() {
       sowEnd: Number(cropDraft.sowEnd),
       harvestStart: Number(cropDraft.harvestStart),
       harvestEnd: Number(cropDraft.harvestEnd),
-      spacing: Math.max(1, Number(cropDraft.spacing) || 1),
+      minSpacing: Math.max(1, Number(cropDraft.minSpacing) || 1),
+      maxSpacing: Math.max(Number(cropDraft.minSpacing) || 1, Number(cropDraft.maxSpacing) || 1),
+      customSpacing: Number(cropDraft.customSpacing) > 0 ? Math.max(1, Number(cropDraft.customSpacing)) : null,
+      spacing: Number(cropDraft.customSpacing) > 0 ? Math.max(1, Number(cropDraft.customSpacing)) : Math.max(Number(cropDraft.minSpacing) || 1, Number(cropDraft.maxSpacing) || 1),
       rating: normalizeRating(cropDraft.rating),
     };
     setState((prev) => ({
@@ -796,7 +953,7 @@ export default function GardenApp() {
   };
 
   const exportGarden = () => {
-    const blob = new Blob([JSON.stringify({ beds: state.beds, crops: state.crops, spacingTransparency: state.spacingTransparency }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ beds: state.beds, crops: state.crops, spacingTransparency: state.spacingTransparency, autoPlantPreferences: state.autoPlantPreferences }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -823,6 +980,10 @@ export default function GardenApp() {
         spacingTransparency: Number.isFinite(Number(data.spacingTransparency))
           ? Math.min(100, Math.max(0, Number(data.spacingTransparency)))
           : 25,
+        autoPlantPreferences: {
+          spacingMode: data.autoPlantPreferences?.spacingMode === "min" ? "min" : "max",
+          layout: data.autoPlantPreferences?.layout === "grid" ? "grid" : "hex",
+        },
       }));
       setSelection(EMPTY_SELECTION);
       setEditingGroupId(null);
@@ -836,13 +997,23 @@ export default function GardenApp() {
   };
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" data-theme={theme}>
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true"><span>✦</span></div>
           <div><p>Gartenjournal</p><h1>Mein Gemüsegarten</h1></div>
         </div>
         <div className="header-actions">
+          <button
+            className="theme-toggle"
+            type="button"
+            aria-label={theme === "dark" ? "Hellen Modus einschalten" : "Dunklen Modus einschalten"}
+            title={theme === "dark" ? "Heller Modus" : "Dunkler Modus"}
+            onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
+          >
+            <span className={theme === "dark" ? "active" : ""} aria-hidden="true">☾</span>
+            <span className={theme === "light" ? "active" : ""} aria-hidden="true">☀</span>
+          </button>
           <button className="button ghost compact" onClick={() => importRef.current?.click()}>Import</button>
           <button className="button secondary compact" onClick={exportGarden}>Sichern</button>
           <input ref={importRef} type="file" accept="application/json" hidden onChange={importGarden} />
@@ -939,67 +1110,94 @@ export default function GardenApp() {
                     : [];
                 const overlapIds = new Set(movingIds.length ? getSpacingOverlapIds(bed.plantings, state.crops, bed, movingIds) : []);
                 const drawingPaths = pathDraft?.bedId === bed.id;
+                const autoPlanting = autoPlantDraft?.bedId === bed.id;
+                const bedStatistics = bedStatisticsById.get(bed.id);
 
                 return (
-                  <article className="bed-card" key={bed.id}>
+                  <article className={`bed-card ${fullscreenBedId === bed.id ? "fullscreen" : ""}`} key={bed.id}>
                     <div className="bed-card-head">
-                      <div><span>{bed.width} × {bed.length} m · {(bed.width * bed.length).toFixed(1)} m²</span><h3>{bed.name}</h3></div>
-                      <button
-                        className="icon-button"
-                        type="button"
-                        title="Beet entfernen"
-                        aria-label={`${bed.name} entfernen`}
-                        onClick={() => setDeleteRequest({
-                          type: "bed",
-                          id: bed.id,
-                          title: `Beet „${bed.name}“ löschen?`,
-                          message: "Das Beet und alle darin platzierten Pflanzen werden endgültig entfernt.",
-                        })}
-                      >×</button>
+                      {editingBed?.id === bed.id ? (
+                        <form className="bed-edit-form" onSubmit={(event) => saveBedEdit(event, bed.id)}>
+                          <label><span>Beetname</span><input value={editingBed.name} onChange={(event) => setEditingBed({ ...editingBed, name: event.target.value })} /></label>
+                          <label><span>Breite (m)</span><input type="number" min="0.2" step="0.1" value={editingBed.width} onChange={(event) => setEditingBed({ ...editingBed, width: event.target.value })} /></label>
+                          <label><span>Länge (m)</span><input type="number" min="0.2" step="0.1" value={editingBed.length} onChange={(event) => setEditingBed({ ...editingBed, length: event.target.value })} /></label>
+                          <button type="submit">Speichern</button><button type="button" onClick={() => setEditingBed(null)}>Abbrechen</button>
+                        </form>
+                      ) : (
+                        <div><span>{bed.width} × {bed.length} m · {(bed.width * bed.length).toFixed(1)} m²</span><h3>{bed.name}</h3></div>
+                      )}
+                      <div className="bed-management-actions">
+                        <button type="button" className="fullscreen-toggle" aria-pressed={fullscreenBedId === bed.id} onClick={() => setFullscreenBedId((current) => current === bed.id ? null : bed.id)}><span aria-hidden="true">⛶</span>{fullscreenBedId === bed.id ? "Vollbild beenden" : "Vollbild"}</button>
+                        <button type="button" onClick={() => setEditingBed({ id: bed.id, name: bed.name, width: bed.width, length: bed.length })}>Bearbeiten</button>
+                        <button type="button" onClick={() => setDuplicateBedDraft({ bedId: bed.id, includeSettings: true, includeContents: true })}>Duplizieren</button>
+                        <button
+                          className="danger"
+                          type="button"
+                          aria-label={`${bed.name} entfernen`}
+                          onClick={() => setDeleteRequest({ type: "bed", id: bed.id, title: `Beet „${bed.name}“ löschen?`, message: "Das Beet und alle darin platzierten Pflanzen, Wege und Gruppen werden endgültig entfernt." })}
+                        >Löschen</button>
+                      </div>
                     </div>
 
-                    <div className="bed-planner-controls" aria-label={`Darstellung für ${bed.name}`}>
-                      <label className="distance-toggle">
-                        <input type="checkbox" checked={bed.showSpacing} onChange={(event) => updateBedSpacing(bed.id, event.target.checked)} />
-                        <span aria-hidden="true"><i /></span>
-                        <b>Pflanzabstände</b>
-                      </label>
-                      <label className="distance-toggle">
-                        <input type="checkbox" checked={bed.showGrid || drawingPaths} disabled={drawingPaths} onChange={(event) => updateGridSettings(bed.id, event.target.checked, activeGridSize, activeBedGroup?.id)} />
-                        <span aria-hidden="true"><i /></span>
-                        <b>Raster &amp; Einrasten</b>
-                      </label>
-                      <label className="grid-size-control bed-grid-size-control">
-                        <span>{activeBedGroup ? "Gruppenrasterweite" : "Rasterweite"}</span>
-                        <input
-                          type="range"
-                          min="5"
-                          max="100"
-                          step="5"
-                          value={activeGridSize}
-                          disabled={!bed.showGrid || drawingPaths}
-                          aria-label={`${activeBedGroup ? "Gruppenrasterweite" : "Rasterweite"} für ${bed.name}`}
-                          onChange={(event) => updateGridSettings(bed.id, true, Number(event.target.value), activeBedGroup?.id)}
-                        />
-                        <output>{activeGridSize} cm</output>
-                      </label>
-                      <div className="path-tools">
-                        {drawingPaths ? (
-                          <>
-                            <button type="button" disabled={!pathDraft.history.length} onClick={undoPathStep}>Rückgängig</button>
-                            <button type="button" className="primary" onClick={() => confirmPathDrawing(bed)}>Übernehmen</button>
-                            <button type="button" onClick={stopPathDrawing}>Abbrechen</button>
-                          </>
-                        ) : (
-                          <button type="button" disabled={Boolean(pathDraft)} onClick={() => startPathDrawing(bed)}>Wege zeichnen</button>
-                        )}
-                      </div>
+                    <div className={`bed-planner-controls ${autoPlanting ? "auto-active" : ""}`} aria-label={`Darstellung für ${bed.name}`}>
+                      {!autoPlanting && (
+                        <>
+                          <label className="distance-toggle">
+                            <input type="checkbox" checked={bed.showSpacing} onChange={(event) => updateBedSpacing(bed.id, event.target.checked)} />
+                            <span aria-hidden="true"><i /></span>
+                            <b>Pflanzabstände</b>
+                          </label>
+                          <label className="distance-toggle">
+                            <input type="checkbox" checked={bed.showGrid || drawingPaths} disabled={drawingPaths} onChange={(event) => updateGridSettings(bed.id, event.target.checked, activeGridSize, activeBedGroup?.id)} />
+                            <span aria-hidden="true"><i /></span>
+                            <b>Raster &amp; Einrasten</b>
+                          </label>
+                          <label className="grid-size-control bed-grid-size-control">
+                            <span>{activeBedGroup ? "Gruppenrasterweite" : "Rasterweite"}</span>
+                            <input
+                              type="range"
+                              min="5"
+                              max="100"
+                              step="5"
+                              value={activeGridSize}
+                              disabled={!bed.showGrid || drawingPaths}
+                              aria-label={`${activeBedGroup ? "Gruppenrasterweite" : "Rasterweite"} für ${bed.name}`}
+                              onChange={(event) => updateGridSettings(bed.id, true, Number(event.target.value), activeBedGroup?.id)}
+                            />
+                            <output>{activeGridSize} cm</output>
+                          </label>
+                          <div className="path-tools">
+                            {drawingPaths ? (
+                              <>
+                                <button type="button" disabled={!pathDraft.history.length} onClick={undoPathStep}>Rückgängig</button>
+                                <button type="button" className="primary" onClick={() => confirmPathDrawing(bed)}>Übernehmen</button>
+                                <button type="button" onClick={stopPathDrawing}>Abbrechen</button>
+                              </>
+                            ) : (
+                              <button type="button" disabled={Boolean(pathDraft)} onClick={() => startPathDrawing(bed)}>Wege zeichnen</button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                      {autoPlanting && (() => {
+                        const autoCrop = state.crops.find((item) => item.id === autoPlantDraft.cropId) ?? state.crops[0];
+                        return (
+                          <div className="auto-plant-panel">
+                            <div className="auto-plant-crop"><span>Kultur</span><b><i style={{ background: autoCrop.color }}>{autoCrop.icon}</i>{autoCrop.name}</b></div>
+                            <div className="auto-plant-choice"><span>Pflanzabstand</span>{Number(autoCrop.customSpacing) > 0 ? <strong>Eigener Abstand · {autoCrop.customSpacing} cm</strong> : <div className="option-switch" role="group" aria-label="Pflanzabstand"><button type="button" className={autoPlantDraft.spacingMode === "min" ? "active" : ""} aria-pressed={autoPlantDraft.spacingMode === "min"} onClick={() => updateAutoPlantSetting("spacingMode", "min")}>Min · {autoCrop.minSpacing} cm</button><button type="button" className={autoPlantDraft.spacingMode === "max" ? "active" : ""} aria-pressed={autoPlantDraft.spacingMode === "max"} onClick={() => updateAutoPlantSetting("spacingMode", "max")}>Max · {autoCrop.maxSpacing} cm</button></div>}</div>
+                            <div className="auto-plant-choice"><span>Anordnung</span><div className="option-switch layout-switch" role="group" aria-label="Anordnung"><button type="button" className={autoPlantDraft.layout === "grid" ? "active" : ""} aria-pressed={autoPlantDraft.layout === "grid"} onClick={() => updateAutoPlantSetting("layout", "grid")}><i aria-hidden="true">▦</i>Raster</button><button type="button" className={autoPlantDraft.layout === "hex" ? "active" : ""} aria-pressed={autoPlantDraft.layout === "hex"} onClick={() => updateAutoPlantSetting("layout", "hex")}><i aria-hidden="true">⬡</i>Wabe</button></div></div>
+                            <button type="button" className="auto-plant-exit" onClick={stopAutoPlant}><span aria-hidden="true">×</span> Auto-Plant beenden</button>
+                            <p>Rechteckigen Bereich im Beet aufziehen. Vorhandene Pflanzen, Gruppen und Wege werden ausgegraut und bei der Verteilung nicht berücksichtigt.</p>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     <div className="bed-editor">
                       <aside className="plant-palette" aria-label={`Pflanzen für ${bed.name}`}>
                         <div className="palette-head">
                           <div><b>Pflanzen</b><span>Ziehen oder doppelklicken</span></div>
+                          <SortControls value={paletteSort} onChange={setPaletteSort} label="Pflanzenliste sortieren" />
                           <div className="palette-rating-filter" role="group" aria-label="Pflanzen nach Bewertung filtern">
                             {[['all', 'Alle'], ['1', '★'], ['2', '★★'], ['3', '★★★']].map(([value, label]) => (
                               <button
@@ -1033,7 +1231,7 @@ export default function GardenApp() {
                                 title={`${crop.name}: ziehen oder doppelklicken`}
                               >
                                 <i style={{ background: crop.color }}>{crop.icon}</i>
-                                <span><b>{crop.name}</b><small>{crop.spacing} cm Abstand · {"★".repeat(crop.rating)}</small></span>
+                                <span><b>{crop.name}{crop.growingProfile === "greenhouse" && <GreenhouseIcon title="Gewächshauskultur" />}</b><small>{Number(crop.customSpacing) > 0 ? `${crop.customSpacing} cm eigener Abstand` : `${crop.minSpacing}–${crop.maxSpacing} cm Abstand`} · {"★".repeat(crop.rating)}</small></span>
                                 <em aria-hidden="true">⋯</em>
                               </button>
                               {paletteMenu?.bedId === bed.id && paletteMenu.cropId === crop.id && (() => {
@@ -1041,6 +1239,7 @@ export default function GardenApp() {
                                 const ungroupedCount = cropIds.filter((id) => !groupedIds.has(id)).length;
                                 return (
                                   <div className="palette-context-menu" role="menu" aria-label={`${crop.name} verwalten`}>
+                                    <button type="button" className="auto-plant-menu-item" disabled={Boolean(pathDraft || autoPlantDraft)} onClick={() => startAutoPlant(bed, crop)}><span aria-hidden="true">✦</span><b>Auto-Plant</b></button>
                                     <button type="button" onClick={() => addPlantAt(bed.id, crop.id)}>Eine hinzufügen</button>
                                     <button type="button" disabled={!cropIds.length} onClick={() => selectCropPlantings(bed.id, crop.id)}>Alle markieren <span>{cropIds.length}</span></button>
                                     <button type="button" disabled={ungroupedCount < 2} onClick={() => groupCropPlantings(bed.id, crop.id)}>Alle gruppieren <span>{ungroupedCount}</span></button>
@@ -1058,22 +1257,23 @@ export default function GardenApp() {
                         <div className="bed-scale"><span>↔ Länge {bed.length} m</span><span>↕ Breite {bed.width} m</span></div>
                         <div className="bed-scroll">
                           <div
-                            className={`bed-visual ${activeBedGroup ? "group-focus" : ""} ${drawingPaths ? "path-drawing" : ""} ${draggingOutside && selection.bedId === bed.id ? "delete-drop-active" : ""}`}
+                            className={`bed-visual ${activeBedGroup ? "group-focus" : ""} ${drawingPaths ? "path-drawing" : ""} ${autoPlanting ? "auto-planting" : ""} ${draggingOutside && selection.bedId === bed.id ? "delete-drop-active" : ""}`}
                             style={{
                               aspectRatio: `${bed.length} / ${bed.width}`,
                               minWidth: `${Math.max(520, bedRatio * 250)}px`,
+                              "--bed-ratio": bedRatio,
                             }}
                             onDragOver={(event) => {
                               event.preventDefault();
                               event.dataTransfer.dropEffect = "copy";
                             }}
                             onDrop={(event) => handleBedDrop(event, bed.id)}
-                            onPointerDown={(event) => drawingPaths ? beginPathFrame(event, bed) : beginSelectionFrame(event, bed.id)}
-                            onPointerMove={(event) => drawingPaths ? continuePathFrame(event, bed) : continueSelectionFrame(event, bed.id)}
-                            onPointerUp={(event) => drawingPaths ? finishPathFrame(event, bed) : finishSelectionFrame(event, bed)}
-                            onPointerCancel={(event) => drawingPaths ? finishPathFrame(event, bed) : finishSelectionFrame(event, bed)}
+                            onPointerDown={(event) => drawingPaths ? beginPathFrame(event, bed) : autoPlanting ? beginAutoPlantFrame(event, bed) : beginSelectionFrame(event, bed.id)}
+                            onPointerMove={(event) => drawingPaths ? continuePathFrame(event, bed) : autoPlanting ? continueAutoPlantFrame(event, bed) : continueSelectionFrame(event, bed.id)}
+                            onPointerUp={(event) => drawingPaths ? finishPathFrame(event, bed) : autoPlanting ? finishAutoPlantFrame(event, bed) : finishSelectionFrame(event, bed)}
+                            onPointerCancel={(event) => drawingPaths ? finishPathFrame(event, bed) : autoPlanting ? finishAutoPlantFrame(event, bed) : finishSelectionFrame(event, bed)}
                           >
-                            {(bed.plantings || []).length === 0 && <span className="bed-empty">Pflanze hier ablegen</span>}
+                            {(bed.plantings || []).length === 0 && <span className="bed-empty">{autoPlanting ? "Bereich für Auto-Plant aufziehen" : "Pflanze hier ablegen"}</span>}
 
                             {(bed.showGrid || drawingPaths) && (
                               <div
@@ -1182,6 +1382,19 @@ export default function GardenApp() {
                               />
                             )}
 
+                            {autoPlantDraft?.bedId === bed.id && autoPlantDraft.frame && (
+                              <div
+                                className="selection-frame auto-plant-frame"
+                                style={{
+                                  left: `${Math.min(autoPlantDraft.frame.start.x, autoPlantDraft.frame.current.x)}%`,
+                                  top: `${Math.min(autoPlantDraft.frame.start.y, autoPlantDraft.frame.current.y)}%`,
+                                  width: `${Math.abs(autoPlantDraft.frame.current.x - autoPlantDraft.frame.start.x)}%`,
+                                  height: `${Math.abs(autoPlantDraft.frame.current.y - autoPlantDraft.frame.start.y)}%`,
+                                }}
+                                aria-hidden="true"
+                              />
+                            )}
+
                             {bed.showSpacing && (
                               <svg className="distance-layer" viewBox={`0 0 ${bedLengthCm} ${bedWidthCm}`} preserveAspectRatio="none" aria-hidden="true">
                                 {(bed.plantings || []).map((planting) => {
@@ -1194,7 +1407,7 @@ export default function GardenApp() {
                                       key={planting.id}
                                       cx={(Number(planting.x) / 100) * bedLengthCm}
                                       cy={(Number(planting.y) / 100) * bedWidthCm}
-                                      r={Math.max(0.5, Number(crop.spacing) / 2)}
+                                      r={Math.max(0.5, Number(planting.spacingCm ?? crop.maxSpacing ?? crop.spacing) / 2)}
                                       className={`${selectedIds.has(planting.id) || activeGroupPlantingIds.has(planting.id) ? "selected" : ""} ${isOverlapping ? "overlap" : ""}`}
                                       style={{
                                         "--crop": isOverlapping ? "#b84436" : crop.color,
@@ -1230,7 +1443,7 @@ export default function GardenApp() {
                                     else removePlantings(bed.id, [planting.id]);
                                   }}
                                   aria-label={`${crop.name} bei ${Math.round(planting.x)} Prozent Länge und ${Math.round(planting.y)} Prozent Breite${plantingGroup ? ", gruppiert" : bed.showGrid ? `, im ${bed.gridSizeCm}-Zentimeter-Raster` : ""}${overlapIds.has(planting.id) ? ", Pflanzabstand überschneidet sich" : ""}`}
-                                  title={`${crop.name} · ${crop.spacing} cm Pflanzabstand`}
+                                  title={`${crop.name} · ${planting.spacingCm ?? crop.maxSpacing ?? crop.spacing} cm Pflanzabstand`}
                                 >
                                   <span className="plant-marker">{crop.icon}</span>
                                   <span className="plant-name">{crop.name}</span>
@@ -1288,12 +1501,31 @@ export default function GardenApp() {
                           ) : (
                             <span className="selection-hint">Freie Fläche aufziehen, um Pflanzen und Wege zu markieren. Strg-Klick erweitert die Auswahl.</span>
                           )}
-                          <strong>{(bed.plantings || []).length} Pflanzen · {(bed.paths || []).length} Wege</strong>
+                          <div className="bed-summary">
+                            <button type="button" aria-describedby={`bed-summary-${bed.id}`}>
+                              {(bed.plantings || []).length} Pflanzen · {(bed.paths || []).length} Wege
+                            </button>
+                            <div className="bed-summary-popup" id={`bed-summary-${bed.id}`} role="tooltip">
+                              <div className="summary-title"><b>{bed.name}</b><span>{formatNumber(Number(bed.width) * Number(bed.length))} m² Beetfläche</span></div>
+                              <div className="summary-crops">
+                                {bedStatistics.cropCounts.length ? bedStatistics.cropCounts.map(({ crop, count }) => (
+                                  <span key={crop.id}><i style={{ background: crop.color }}>{crop.icon}</i><b>{crop.name}</b><strong>{count}</strong></span>
+                                )) : <em>Noch keine Pflanzen platziert.</em>}
+                              </div>
+                              <dl>
+                                <div><dt>Weglänge</dt><dd>Länge ~ {formatApproximateLength(bedStatistics.pathLengthCm)}</dd></div>
+                                <div><dt>Wegfläche</dt><dd>~ {formatNumber(bedStatistics.pathAreaM2, 2)} m²</dd></div>
+                                <div><dt>Flächennutzung</dt><dd>{formatNumber(bedStatistics.utilizationPercent)} %</dd></div>
+                                <div><dt>Tatsächlich frei</dt><dd>{formatNumber(bedStatistics.freePercent)} %</dd></div>
+                              </dl>
+                              <p>Nutzung summiert alle Abstandsflächen und Wege vollständig, auch außerhalb des Beetes und bei Überlappungen mehrfach. Freie Fläche bezieht sich ausschließlich auf die einmalig belegte Fläche im Beet.</p>
+                            </div>
+                          </div>
                         </div>
                         {(bed.showSpacing || bed.showGrid) && (
                           <p className="distance-note">
                             {bed.showSpacing && "Die gefüllten, gestrichelten Kreise zeigen den empfohlenen Pflanzabstand. Überschneidungen werden beim Verschieben rot markiert. "}
-                            {bed.showGrid && `Pflanzen rasten im ${bed.gridSizeCm}-cm-Raster ein.`}
+                            {bed.showGrid && `Das ${bed.gridSizeCm}-cm-Raster greift nur beim Platzieren und manuellen Verschieben.`}
                           </p>
                         )}
                       </div>
@@ -1359,7 +1591,10 @@ export default function GardenApp() {
         <section className="workspace" aria-labelledby="kulturen-title">
           <div className="section-heading cultures-heading">
             <div><span className="section-kicker">Bibliothek</span><h2 id="kulturen-title">Kulturen verwalten</h2></div>
-            <label className="search"><span aria-hidden="true">⌕</span><input value={cropSearch} onChange={(e) => setCropSearch(e.target.value)} placeholder="Kultur suchen" /></label>
+            <div className="culture-heading-actions">
+              <SortControls value={cultureSort} onChange={setCultureSort} label="Kulturverwaltung sortieren" />
+              <label className="search"><span aria-hidden="true">⌕</span><input value={cropSearch} onChange={(e) => setCropSearch(e.target.value)} placeholder="Kultur suchen" /></label>
+            </div>
           </div>
           <div className="cultures-layout">
             <div className="culture-list">
@@ -1367,9 +1602,9 @@ export default function GardenApp() {
                 <article className="culture-card" key={crop.id}>
                   <div className="culture-icon" style={{ background: crop.color }}>{crop.icon}</div>
                   <div className="culture-info">
-                    <h3>{crop.name}</h3>
+                    <h3>{crop.name}{crop.growingProfile === "greenhouse" && <GreenhouseIcon title="Gewächshauskultur" />}</h3>
                     <p>{crop.note || "Keine Notiz hinterlegt."}</p>
-                    <div className="culture-meta"><span>{crop.growingProfile === "greenhouse" ? "Gewächshaus" : "Freiland"}</span><span>Aussaat {MONTHS[crop.sowStart - 1]}–{MONTHS[crop.sowEnd - 1]}</span><span>Ernte {MONTHS[crop.harvestStart - 1]}–{MONTHS[crop.harvestEnd - 1]}</span><span>{crop.spacing} cm Abstand</span></div>
+                    <div className="culture-meta"><span className="growing-profile-badge">{crop.growingProfile === "greenhouse" && <GreenhouseIcon />}{crop.growingProfile === "greenhouse" ? "Gewächshaus" : "Freiland"}</span><span>Aussaat {MONTHS[crop.sowStart - 1]}–{MONTHS[crop.sowEnd - 1]}</span><span>Ernte {MONTHS[crop.harvestStart - 1]}–{MONTHS[crop.harvestEnd - 1]}</span><span>{crop.minSpacing}–{crop.maxSpacing} cm Abstand</span>{Number(crop.customSpacing) > 0 && <span>Eigener Abstand {crop.customSpacing} cm · Vorrang</span>}</div>
                     <StarRating value={crop.rating} onChange={(rating) => updateCropRating(crop.id, rating)} label={`${crop.name} bewerten`} />
                   </div>
                   <div className="card-actions">
@@ -1398,7 +1633,7 @@ export default function GardenApp() {
                 <span>Anbauart</span>
                 <div>
                   <button type="button" className={cropDraft.growingProfile !== "greenhouse" ? "active" : ""} onClick={() => handleGrowingProfileChange("outdoor")}>Freiland</button>
-                  <button type="button" className={cropDraft.growingProfile === "greenhouse" ? "active" : ""} onClick={() => handleGrowingProfileChange("greenhouse")}>Gewächshaus</button>
+                  <button type="button" className={cropDraft.growingProfile === "greenhouse" ? "active" : ""} onClick={() => handleGrowingProfileChange("greenhouse")}><GreenhouseIcon />Gewächshaus</button>
                 </div>
               </div>
               <div className={`phase-advice ${phaseStatus.type}`}>
@@ -1414,7 +1649,12 @@ export default function GardenApp() {
                 <fieldset><legend>Ernte</legend><MonthSelect value={cropDraft.harvestStart} onChange={(value) => updateManualPhase("harvestStart", value)} /><span>bis</span><MonthSelect value={cropDraft.harvestEnd} onChange={(value) => updateManualPhase("harvestEnd", value)} /></fieldset>
               </div>
               <p className="phase-note">Richtwerte für ein gemäßigtes mitteleuropäisches Klima. Sorte, Frostlage und aktuelles Wetter können Abweichungen erfordern.</p>
-              <label><span>Pflanzabstand (cm)</span><input type="number" min="1" value={cropDraft.spacing} onChange={(e) => setCropDraft({ ...cropDraft, spacing: e.target.value })} /></label>
+              <div className="field-pair spacing-fields">
+                <label><span>Minimaler Pflanzabstand (cm)</span><input type="number" min="1" value={cropDraft.minSpacing} onChange={(e) => setCropDraft({ ...cropDraft, minSpacing: e.target.value })} /></label>
+                <label><span>Maximaler Pflanzabstand (cm)</span><input type="number" min="1" value={cropDraft.maxSpacing} onChange={(e) => setCropDraft({ ...cropDraft, maxSpacing: e.target.value })} /></label>
+              </div>
+              <label><span>Eigener Pflanzabstand (cm, optional)</span><input type="number" min="1" value={cropDraft.customSpacing ?? ""} onChange={(e) => setCropDraft({ ...cropDraft, customSpacing: e.target.value })} placeholder="Kein eigener Wert" /></label>
+              <p className="distance-note">Ein eigener Wert hat Vorrang vor Mindest- und Maximalabstand.</p>
               <label className="rating-field"><span>Bewertung</span><StarRating value={normalizeRating(cropDraft.rating)} onChange={(rating) => setCropDraft({ ...cropDraft, rating })} label="Bewertung der Kultur" /></label>
               <label><span>Notiz</span><textarea rows="3" value={cropDraft.note} onChange={(e) => setCropDraft({ ...cropDraft, note: e.target.value })} placeholder="Standort, Pflege oder Besonderheiten" /></label>
               <div className="form-buttons">
@@ -1426,10 +1666,25 @@ export default function GardenApp() {
         </section>
       )}
 
-      <footer><span>Mein Gemüsegarten</span><p>Alle Daten bleiben in diesem Browser gespeichert.</p><span>Version 1.2</span></footer>
+      <footer><span>Mein Gemüsegarten</span><p>Alle Daten bleiben in diesem Browser gespeichert.</p><span>Version 1.6</span></footer>
       {notice && <div className="toast" role="status">✓ {notice}</div>}
       {undoState && <div className="toast undo-toast" role="status"><span>{undoState.message}</span><button type="button" onClick={restoreLastRemoval}>Rückgängig</button></div>}
       <ConfirmDialog request={deleteRequest} onCancel={() => setDeleteRequest(null)} onConfirm={confirmDeletion} />
+      {duplicateBedDraft && (() => {
+        const sourceBed = state.beds.find((bed) => bed.id === duplicateBedDraft.bedId);
+        if (!sourceBed) return null;
+        return (
+          <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setDuplicateBedDraft(null)}>
+            <section className="duplicate-dialog" role="dialog" aria-modal="true" aria-labelledby="duplicate-title">
+              <div className="duplicate-symbol" aria-hidden="true">⧉</div>
+              <div><span className="section-kicker">Unabhängige Kopie</span><h2 id="duplicate-title">„{sourceBed.name}“ duplizieren</h2><p>Maße und Name werden immer übernommen. Weitere Bestandteile können einzeln gewählt werden.</p></div>
+              <label><input type="checkbox" checked={duplicateBedDraft.includeSettings} onChange={(event) => setDuplicateBedDraft({ ...duplicateBedDraft, includeSettings: event.target.checked })} /><span><b>Einstellungen</b><small>Pflanzabstände, Raster und Rasterweite</small></span></label>
+              <label><input type="checkbox" checked={duplicateBedDraft.includeContents} onChange={(event) => setDuplicateBedDraft({ ...duplicateBedDraft, includeContents: event.target.checked })} /><span><b>Inhalte</b><small>Pflanzen, Wege und Gruppen</small></span></label>
+              <div className="duplicate-actions"><button type="button" className="button ghost" onClick={() => setDuplicateBedDraft(null)}>Abbrechen</button><button type="button" className="button primary" onClick={duplicateBed}>Kopie anlegen</button></div>
+            </section>
+          </div>
+        );
+      })()}
     </main>
   );
 }

@@ -9,7 +9,7 @@ function normalizeTransparency(value) {
 }
 
 export function createInitialGarden() {
-  return { beds: [], crops: DEFAULT_CROPS, activeTab: "beete", spacingTransparency: 25 };
+  return { beds: [], crops: DEFAULT_CROPS, activeTab: "beete", spacingTransparency: 25, autoPlantPreferences: { spacingMode: "max", layout: "hex" } };
 }
 
 export function loadGarden(storage = globalThis.localStorage) {
@@ -29,6 +29,10 @@ export function loadGarden(storage = globalThis.localStorage) {
       crops: Array.isArray(parsedGarden.crops) && parsedGarden.crops.length ? normalizeCrops(parsedGarden.crops) : DEFAULT_CROPS,
       activeTab: "beete",
       spacingTransparency: normalizeTransparency(parsedGarden.spacingTransparency),
+      autoPlantPreferences: {
+        spacingMode: parsedGarden.autoPlantPreferences?.spacingMode === "min" ? "min" : "max",
+        layout: parsedGarden.autoPlantPreferences?.layout === "grid" ? "grid" : "hex",
+      },
     };
   } catch {
     return createInitialGarden();
@@ -40,5 +44,6 @@ export function saveGarden(storage, garden) {
     beds: garden.beds,
     crops: garden.crops,
     spacingTransparency: garden.spacingTransparency,
+    autoPlantPreferences: garden.autoPlantPreferences,
   }));
 }
